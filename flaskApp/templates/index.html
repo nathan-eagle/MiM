@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Printify Webstore</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-md-4 side-window">
+                <h2>Conversational Product Creator</h2>
+                
+                <!-- Chat Interface -->
+                <div class="chat-container">
+                    <h3>MiM Assistant</h3>
+                    <div class="chat-messages" id="chatMessages">
+                        {% if not chat_history %}
+                            <div class="message assistant">
+                                <div class="message-content">Hello! Tell me what kind of product you're looking for and provide an image URL, and I'll help create it for you.</div>
+                            </div>
+                        {% else %}
+                            {% for msg in chat_history %}
+                                {% if not msg.get('hidden', False) and not msg.content.strip().startswith('{') and not msg.content.strip().endswith('}') %}
+                                    <div class="message {{ msg.role }}">
+                                        <div class="message-content">{{ msg.content }}</div>
+                                    </div>
+                                {% endif %}
+                            {% endfor %}
+                        {% endif %}
+                    </div>
+
+                    <form method="post" class="chat-input-form" id="chatForm">
+                        <div class="input-group">
+                            <input type="text" class="form-control" name="image_url" id="chat_image_url" placeholder="Image URL (required)" value="{{ image_url }}">
+                        </div>
+                        <div class="input-group mt-2">
+                            <input type="text" class="form-control" name="message" id="chatInput" placeholder="Describe what you want, like 'I want a red hat with my logo'" value="{{ user_message }}">
+                            <button type="submit" class="btn btn-primary" id="sendButton">Send</button>
+                        </div>
+                    </form>
+                    
+                    <form method="post" class="mt-2">
+                        <input type="hidden" name="reset" value="true">
+                        <button type="submit" class="btn btn-outline-secondary btn-sm">Reset Conversation</button>
+                    </form>
+                </div>
+            </div>
+            
+            <div class="col-md-8 main-content">
+                <!-- Top Search Bar -->
+                <div class="row mb-3">
+                    <div class="col-md-12">
+                        <form method="post" class="direct-search-form">
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="image_url" name="image_url" value="{{ image_url }}" placeholder="Image URL" required>
+                                <input type="text" class="form-control" id="search_term" name="search_term" value="{{ search_term }}" placeholder="Search Term" required>
+                                <button type="submit" class="btn btn-primary">Generate</button>
+                            </div>
+                            <div class="input-group mt-2">
+                                <span class="input-group-text">Scale</span>
+                                <input type="number" step="0.1" min="0.1" max="2.0" class="form-control" id="logo_scale" name="logo_scale" value="{{ current_logo_settings.scale }}" placeholder="0.1-2.0">
+                                <span class="input-group-text">X (left-right)</span>
+                                <input type="number" step="0.1" min="0.0" max="1.0" class="form-control" id="logo_x" name="logo_x" value="{{ current_logo_settings.x }}" placeholder="0-1">
+                                <span class="input-group-text">Y (top-bottom)</span>
+                                <input type="number" step="0.1" min="0.0" max="1.0" class="form-control" id="logo_y" name="logo_y" value="{{ current_logo_settings.y }}" placeholder="0-1">
+                            </div>
+                            <small class="text-muted">Scale: 1.0 is normal size | Position: X=0.5 (center), Y=0.5 (center)</small>
+                        </form>
+                    </div>
+                </div>
+                
+                <!-- Attempted Searches -->
+                {% if attempted_searches %}
+                    <div class="mb-3">
+                        <h4>Search Attempts:</h4>
+                        <ul class="list-group">
+                            {% for term in attempted_searches %}
+                                <li class="list-group-item">
+                                    {{ term }}
+                                    {% if loop.index == attempted_searches|length and success %}
+                                        <span class="badge bg-success">Success</span>
+                                    {% elif loop.index == attempted_searches|length and not success %}
+                                        <span class="badge bg-danger">Failed</span>
+                                    {% else %}
+                                        <span class="badge bg-warning">Tried</span>
+                                    {% endif %}
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                {% endif %}
+                
+                <!-- Error Message -->
+                {% if error_message %}
+                    <div class="alert alert-danger">{{ error_message }}</div>
+                {% endif %}
+                
+                <!-- Product Display -->
+                {% if mockup_url %}
+                    <h2>Product Mockup</h2>
+                    <div class="product-mockup">
+                        <img src="{{ mockup_url }}" alt="Mockup" class="img-fluid">
+                    </div>
+                {% else %}
+                    <div class="welcome-msg">
+                        <h2>Welcome to the MiM Product Canvas</h2>
+                        <p>You can either:</p>
+                        <ul>
+                            <li>Use the search bar at the top to manually enter a search term and image URL</li>
+                            <li>Chat with the MiM assistant to describe what you want</li>
+                        </ul>
+                        <p>Examples you can try:</p>
+                        <ul>
+                            <li>"I want a black t-shirt with my logo"</li>
+                            <li>"Can you create a red hat with my image on it?"</li>
+                            <li>"Make me a mug with this picture"</li>
+                        </ul>
+                        <p><strong>Note:</strong> Don't forget to provide an image URL!</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Auto-scroll chat to bottom
+        function scrollChatToBottom() {
+            var chatMessages = document.getElementById('chatMessages');
+            if (chatMessages) {
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+        }
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initial scroll
+            scrollChatToBottom();
+            
+            // Focus on chat input
+            var chatInput = document.getElementById('chatInput');
+            if (chatInput) {
+                chatInput.focus();
+            }
+            
+            // Show user message immediately when sending
+            var chatForm = document.getElementById('chatForm');
+            var chatMessages = document.getElementById('chatMessages');
+            var sendButton = document.getElementById('sendButton');
+            
+            chatForm.addEventListener('submit', function(e) {
+                // Don't add the message if it's empty
+                var messageInput = document.getElementById('chatInput');
+                var message = messageInput.value.trim();
+                
+                if (message) {
+                    // Clear previous product display when starting a new conversation
+                    document.querySelectorAll('.product-mockup img').forEach(function(img) {
+                        img.style.opacity = '0.3';  // Fade out the previous image
+                    });
+                    
+                    // Create a user message element immediately
+                    var messageDiv = document.createElement('div');
+                    messageDiv.className = 'message user';
+                    
+                    var contentDiv = document.createElement('div');
+                    contentDiv.className = 'message-content';
+                    contentDiv.textContent = message;
+                    
+                    messageDiv.appendChild(contentDiv);
+                    chatMessages.appendChild(messageDiv);
+                    
+                    // Disable input and show loading state
+                    sendButton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Sending...';
+                    
+                    // Scroll to bottom
+                    scrollChatToBottom();
+                    
+                    // Add a loading indicator
+                    var loadingDiv = document.createElement('div');
+                    loadingDiv.className = 'message assistant loading';
+                    loadingDiv.innerHTML = '<div class="message-content"><span class="typing-indicator"><span>.</span><span>.</span><span>.</span></span></div>';
+                    chatMessages.appendChild(loadingDiv);
+                    scrollChatToBottom();
+                    
+                    // Let the form submit happen
+                    // DO NOT disable the input or button as this prevents form submission
+                    setTimeout(function() {
+                        // If form doesn't submit after 100ms, force it
+                        if (!chatForm.classList.contains('submitted')) {
+                            chatForm.classList.add('submitted');
+                            chatForm.submit();
+                        }
+                    }, 100);
+                }
+            });
+            
+            // Copy image URL from main form to chat form
+            var mainImageUrl = document.getElementById('image_url');
+            var chatImageUrl = document.getElementById('chat_image_url');
+            
+            if (mainImageUrl && chatImageUrl) {
+                mainImageUrl.addEventListener('input', function() {
+                    chatImageUrl.value = mainImageUrl.value;
+                });
+                
+                chatImageUrl.addEventListener('input', function() {
+                    mainImageUrl.value = chatImageUrl.value;
+                });
+            }
+            
+            // Set a default image URL if none provided
+            if (mainImageUrl && !mainImageUrl.value) {
+                mainImageUrl.value = "https://cdn-icons-png.flaticon.com/512/25/25231.png";
+                if (chatImageUrl) chatImageUrl.value = mainImageUrl.value;
+            }
+        });
+    </script>
+</body>
+</html>
