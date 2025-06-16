@@ -1,20 +1,29 @@
+import os
+from dotenv import load_dotenv
 from flask import Flask, request, render_template, redirect, url_for, jsonify
 import requests
 import time
 import openai
 import re
-import os
+
+# Load environment variables
+load_dotenv()
 
 app = Flask(__name__)
 
-# Configure OpenAI API
-# Use environment variable for API key or set a placeholder
-openai.api_key = os.environ.get("OPENAI_API_KEY", "your-api-key")
+# Get API keys from environment variables
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+PRINTIFY_API_TOKEN = os.getenv('PRINTIFY_API_TOKEN')
 
-# Use environment variable for API token or set a placeholder
-API_TOKEN = os.environ.get("PRINTIFY_API_TOKEN", "your-printify-token")
+if not OPENAI_API_KEY or not PRINTIFY_API_TOKEN:
+    raise ValueError("Missing required environment variables: OPENAI_API_KEY and/or PRINTIFY_API_TOKEN")
+
+# Configure OpenAI
+openai.api_key = OPENAI_API_KEY
+
+# Printify API headers
 headers = {
-    "Authorization": f"Bearer {API_TOKEN}",
+    "Authorization": f"Bearer {PRINTIFY_API_TOKEN}",
     "Content-Type": "application/json",
     "User-Agent": "PythonScript"
 }
@@ -31,6 +40,11 @@ default_logo_settings = {
 
 # Store the current logo settings for the session
 current_logo_settings = default_logo_settings.copy()
+
+# List of common colors for matching
+COMMON_COLORS = [
+    'white', 'black', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'brown', 'gray', 'grey', 'beige', 'maroon', 'navy', 'teal', 'lime', 'olive', 'cyan', 'magenta', 'gold', 'silver', 'cream', 'ivory', 'lavender', 'peach', 'mint', 'coral', 'burgundy', 'mustard', 'turquoise', 'aqua', 'charcoal', 'khaki', 'tan', 'rose', 'salmon', 'plum', 'indigo', 'violet', 'amber', 'apricot', 'azure', 'bronze', 'cherry', 'chocolate', 'copper', 'crimson', 'emerald', 'jade', 'lemon', 'mauve', 'ochre', 'ruby', 'sapphire', 'scarlet', 'taupe', 'topaz', 'wine'
+]
 
 def get_all_available_products():
     """Get a list of all available products from Printify API"""
@@ -90,8 +104,10 @@ def find_blueprint_id(search_term):
     res.raise_for_status()
     blueprints = res.json()
     
-    # First, try to find an exact match (case insensitive)
     search_term_lower = search_term.lower()
+    print(f"Searching for blueprint with term: '{search_term_lower}'")
+    
+    # First, try to find an exact match
     for blueprint in blueprints:
         if search_term_lower == blueprint['title'].lower():
             print(f"Found exact match: {blueprint['title']}")
@@ -102,42 +118,52 @@ def find_blueprint_id(search_term):
         if search_term_lower in blueprint['title'].lower():
             print(f"Found partial match: {blueprint['title']}")
             return blueprint['id'], blueprint['title']
-            
-    # If no match found, try a more flexible approach by checking if all words in search_term
-    # appear in the blueprint title (in any order)
+    
+    # Enhanced flexible matching for common product types
+    flexible_matches = {
+        'hat': ['hat', 'cap', 'beanie'],
+        'cap': ['cap', 'hat'],
+        'shirt': ['shirt', 'tee'],
+        't-shirt': ['shirt', 'tee'],
+        'tee': ['tee', 'shirt'],
+        'mug': ['mug', 'cup'],
+        'cup': ['cup', 'mug'],
+        'bag': ['bag', 'tote'],
+        'tote': ['tote', 'bag']
+    }
+    
+    if search_term_lower in flexible_matches:
+        keywords = flexible_matches[search_term_lower]
+        for blueprint in blueprints:
+            title_lower = blueprint['title'].lower()
+            for keyword in keywords:
+                if keyword in title_lower:
+                    print(f"Found flexible match for '{search_term}': {blueprint['title']}")
+                    return blueprint['id'], blueprint['title']
+    
+    # For longer search terms, try matching with the most significant words
     search_words = set(search_term_lower.split())
     for blueprint in blueprints:
         title_words = set(blueprint['title'].lower().split())
-        # Check if all words in search_term are in title
         if search_words.issubset(title_words):
             print(f"Found word match: {blueprint['title']}")
             return blueprint['id'], blueprint['title']
     
-    # For longer search terms, try matching with the most significant words
     if len(search_words) > 2:
-        # Remove common words that might cause issues
         stop_words = {'a', 'an', 'the', 'and', 'or', 'but', 'of', 'for', 'with'}
         filtered_search_words = search_words - stop_words
-        
         best_match = None
         best_match_score = 0
-        
         for blueprint in blueprints:
             title_words = set(blueprint['title'].lower().split())
-            # Count how many significant words match
             match_count = len(filtered_search_words.intersection(title_words))
-            
-            # Check if this is the best match so far
             if match_count > best_match_score:
                 best_match_score = match_count
                 best_match = blueprint
-        
-        # If we found a decent match (at least 50% of significant words match)
         if best_match and best_match_score >= len(filtered_search_words) / 2:
             print(f"Found word similarity match: {best_match['title']}")
             return best_match['id'], best_match['title']
     
-    # If all attempts fail, return None
     return None, None
 
 def get_print_providers(blueprint_id):
@@ -179,15 +205,22 @@ def upload_image(image_url):
 def create_product(shop_id, blueprint_id, print_provider_id, image_id, variant_ids):
     global current_logo_settings
     
+    # Use only the first variant to ensure we get the desired color in the mockup
+    primary_variant_id = variant_ids[0] if variant_ids else None
+    if not primary_variant_id:
+        raise Exception("No variants available for product creation")
+    
+    print(f"Creating product with primary variant ID: {primary_variant_id}")
+    
     product_payload = {
         "title": "Custom Product",
         "description": "A custom product with a logo.",
         "blueprint_id": blueprint_id,
         "print_provider_id": print_provider_id,
-        "variants": [{"id": vid, "price": 1999, "is_enabled": True} for vid in variant_ids[:10]],  # Limit to first 10 variants
+        "variants": [{"id": primary_variant_id, "price": 1999, "is_enabled": True}],
         "print_areas": [
             {
-                "variant_ids": variant_ids[:10],  # Limit to first 10 variants
+                "variant_ids": [primary_variant_id],
                 "placeholders": [
                     {
                         "position": "front",
@@ -208,48 +241,13 @@ def create_product(shop_id, blueprint_id, print_provider_id, image_id, variant_i
     try:
         res = requests.post(f"https://api.printify.com/v1/shops/{shop_id}/products.json", headers=headers, json=product_payload)
         res.raise_for_status()
-        return res.json()["id"]
+        product_id = res.json()["id"]
+        print(f"Successfully created product with ID: {product_id}")
+        return product_id
     except requests.exceptions.HTTPError as e:
         print(f"Error creating product: {e}")
         print(f"Response content: {e.response.content}")
-        if len(variant_ids) > 1:
-            # Try again with just one variant
-            return create_product_single_variant(shop_id, blueprint_id, print_provider_id, image_id, variant_ids[0])
         raise e
-
-def create_product_single_variant(shop_id, blueprint_id, print_provider_id, image_id, variant_id):
-    """Fallback method to create product with just a single variant"""
-    global current_logo_settings
-    
-    product_payload = {
-        "title": "Custom Product",
-        "description": "A custom product with a logo.",
-        "blueprint_id": blueprint_id,
-        "print_provider_id": print_provider_id,
-        "variants": [{"id": variant_id, "price": 1999, "is_enabled": True}],
-        "print_areas": [
-            {
-                "variant_ids": [variant_id],
-                "placeholders": [
-                    {
-                        "position": "front",
-                        "images": [
-                            {
-                                "id": image_id,
-                                "angle": 0,
-                                "x": current_logo_settings["x"],
-                                "y": current_logo_settings["y"],
-                                "scale": current_logo_settings["scale"]
-                            }
-                        ]
-                    }
-                ]
-            }
-        ]
-    }
-    res = requests.post(f"https://api.printify.com/v1/shops/{shop_id}/products.json", headers=headers, json=product_payload)
-    res.raise_for_status()
-    return res.json()["id"]
 
 def get_mockup_image(shop_id, product_id):
     for _ in range(10):  # wait for mockup generation
@@ -809,6 +807,134 @@ def simplify_search_term(search_term):
     
     return "t-shirt"  # Last resort fallback
 
+def extract_color_from_message(message):
+    """Extract a color from the user's message, if present. Returns the last color mentioned."""
+    message_lower = message.lower()
+    found_colors = []
+    
+    for color in COMMON_COLORS:
+        if re.search(rf'\b{color}\b', message_lower):
+            found_colors.append(color)
+    
+    if found_colors:
+        # Return the last color mentioned (usually the desired one)
+        chosen_color = found_colors[-1]
+        print(f"Found colors {found_colors} in message: '{message}', choosing: '{chosen_color}'")
+        return chosen_color
+    
+    print(f"No color found in message: '{message}'")
+    return None
+
+def detect_simple_product_request(user_message):
+    """Detect simple product requests and return the search term directly"""
+    message_lower = user_message.lower().strip()
+    
+    # Direct product mappings for simple requests
+    simple_products = {
+        'hat': 'hat',
+        'cap': 'cap', 
+        'baseball cap': 'baseball cap',
+        'trucker cap': 'trucker cap',
+        'dad hat': 'dad hat',
+        'beanie': 'beanie',
+        'bucket hat': 'bucket hat',
+        't-shirt': 't-shirt',
+        'tshirt': 't-shirt',
+        'tee': 't-shirt',
+        'shirt': 't-shirt',
+        'hoodie': 'hoodie',
+        'sweatshirt': 'sweatshirt',
+        'mug': 'mug',
+        'cup': 'mug',
+        'tote': 'tote',
+        'bag': 'bag',
+        'tote bag': 'tote bag',
+        'sticker': 'sticker',
+        'poster': 'poster'
+    }
+    
+    # Check for exact matches first
+    if message_lower in simple_products:
+        return simple_products[message_lower]
+    
+    # Check for color + product combinations (e.g., "red hat", "blue shirt")
+    words = message_lower.split()
+    if len(words) == 2:
+        color, product = words
+        if color in COMMON_COLORS and product in simple_products:
+            return simple_products[product]
+    
+    # Check if the message contains a simple product request
+    for product_key, search_term in simple_products.items():
+        if product_key in message_lower:
+            # Make sure it's not part of a larger word
+            if re.search(r'\b' + re.escape(product_key) + r'\b', message_lower):
+                return search_term
+    
+    return None
+
+def get_variants_for_product(blueprint_id, print_provider_id, requested_color=None):
+    """Get variants for a product, optionally filtered by color"""
+    try:
+        res = requests.get(f"https://api.printify.com/v1/catalog/blueprints/{blueprint_id}/print_providers/{print_provider_id}/variants.json", headers=headers)
+        res.raise_for_status()
+        all_variants = res.json()["variants"]
+        
+        print(f"Available variants for blueprint {blueprint_id}:")
+        for variant in all_variants[:5]:  # Show first 5 for debugging
+            color = variant.get("options", {}).get("color", "Unknown")
+            print(f"  - {variant['title']} (Color: {color})")
+        
+        if not requested_color:
+            print("No color requested, using all variants")
+            return [v["id"] for v in all_variants]
+        
+        print(f"Looking for color: '{requested_color}'")
+        
+        # First try exact match
+        exact_matches = []
+        fuzzy_matches = []
+        
+        for variant in all_variants:
+            color = variant.get("options", {}).get("color", "").lower()
+            variant_title = variant.get("title", "").lower()
+            
+            # Exact match
+            if requested_color.lower() == color:
+                exact_matches.append(variant)
+            # Fuzzy match - color contains requested color or vice versa
+            elif (requested_color.lower() in color or 
+                  color in requested_color.lower() or
+                  requested_color.lower() in variant_title):
+                fuzzy_matches.append(variant)
+        
+        if exact_matches:
+            print(f"Found exact matches for color '{requested_color}': {[v['title'] for v in exact_matches]}")
+            # Put exact matches first, then add other variants
+            selected_variants = exact_matches + [v for v in all_variants if v not in exact_matches]
+            return [v["id"] for v in selected_variants]
+        
+        if fuzzy_matches:
+            print(f"Found fuzzy matches for color '{requested_color}': {[v['title'] for v in fuzzy_matches]}")
+            # Put fuzzy matches first, then add other variants  
+            selected_variants = fuzzy_matches + [v for v in all_variants if v not in fuzzy_matches]
+            return [v["id"] for v in selected_variants]
+        
+        # No matches found - return available colors instead of variant IDs
+        print(f"No variants found for color '{requested_color}'")
+        available_colors = []
+        for variant in all_variants:
+            color = variant.get("options", {}).get("color", "")
+            if color and color not in available_colors:
+                available_colors.append(color)
+        
+        print(f"Available colors: {available_colors}")
+        return {"error": "color_not_found", "available_colors": available_colors, "requested_color": requested_color}
+        
+    except Exception as e:
+        print(f"Error getting variants: {e}")
+        return []
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     global chat_history, current_logo_settings
@@ -856,6 +982,10 @@ def index():
             # Add user message to chat history first
             add_message_to_chat("user", user_message)
             
+            # Check if this is a color change request
+            color_change_request = any(phrase in user_message.lower() for phrase in 
+                                     ["make it", "change", "color", "blue", "red", "green", "black", "white"])
+            
             # Check if this is a product type change request (like "make it a shirt")
             product_type_change_request = any(phrase in user_message.lower() for phrase in 
                                           ["make it a", "change to", "switch to", "i want a", 
@@ -869,8 +999,25 @@ def index():
                                           'what should i', 'what can i', 'can you suggest',
                                           'swag', 'merchandise', 'merch'])
             
+            # If this is a color change request, keep the same product but change color
+            if color_change_request and not product_type_change_request:
+                # Extract the current product type from chat history
+                current_product = extract_current_product_type(chat_history)
+                search_term = current_product
+                print(f"Color change requested for: {search_term}")
+                should_create_product = True
+                
+                # Extract the requested color
+                requested_color = extract_color_from_message(user_message)
+                if requested_color:
+                    add_message_to_chat("assistant", f"Let me show you a {requested_color} {search_term}!")
+                else:
+                    add_message_to_chat("assistant", f"Let me update the {search_term} for you!")
+                
+                # Create a simple suggestion object for consistency
+                suggestion = {"search_term": search_term, "conversational": False, "adjust_logo": False}
             # If this is a product type change, extract the new product type directly
-            if product_type_change_request:
+            elif product_type_change_request:
                 # Get what product they want to change to
                 search_term = None
                 
@@ -908,10 +1055,20 @@ def index():
                     adjust_logo = suggestion.get('adjust_logo', False)
                     should_create_product = not adjust_logo
             else:
-                # Get AI suggestion for other types of requests
-                suggestion, ai_response = get_ai_suggestion(user_message)
-                search_term = suggestion.get('search_term')
-                print(f"Original search term from AI: {search_term}")  # Debug
+                # First try to detect simple product requests directly
+                simple_search_term = detect_simple_product_request(user_message)
+                if simple_search_term:
+                    search_term = simple_search_term
+                    print(f"Direct product detection: {search_term}")
+                    should_create_product = True
+                    add_message_to_chat("assistant", f"Let me create a {search_term} for you!")
+                    # Create a simple suggestion object for consistency
+                    suggestion = {"search_term": search_term, "conversational": False, "adjust_logo": False}
+                else:
+                    # Get AI suggestion for other types of requests
+                    suggestion, ai_response = get_ai_suggestion(user_message)
+                    search_term = suggestion.get('search_term')
+                    print(f"Original search term from AI: {search_term}")  # Debug
                 
                 # If this is a purely conversational message, just show the conversation without creating a product
                 if suggestion.get('conversational', False):
@@ -1023,11 +1180,30 @@ def index():
                                 shop_id = get_shop_id()
                                 image_id = upload_image(image_url)
                                 
-                                variants_url = f"https://api.printify.com/v1/catalog/blueprints/{blueprint_id}/print_providers/{print_provider_id}/variants.json"
-                                r = requests.get(variants_url, headers=headers)
-                                r.raise_for_status()
-                                response_data = r.json()
-                                variant_ids = [v["id"] for v in response_data["variants"]]
+                                # Extract color from user message
+                                requested_color = extract_color_from_message(user_message)
+                                
+                                # If a color was requested, filter variants for that color
+                                variant_ids = get_variants_for_product(blueprint_id, print_provider_id, requested_color)
+                                
+                                # Check if color was not found
+                                if isinstance(variant_ids, dict) and variant_ids.get("error") == "color_not_found":
+                                    available_colors = variant_ids["available_colors"]
+                                    requested_color_name = variant_ids["requested_color"]
+                                    
+                                    # Format the available colors nicely
+                                    if len(available_colors) <= 3:
+                                        colors_text = ", ".join(available_colors)
+                                    else:
+                                        colors_text = ", ".join(available_colors[:3]) + f", and {len(available_colors)-3} more"
+                                    
+                                    error_message = f"Sorry, '{requested_color_name}' is not available for this {blueprint_title}. Available colors are: {colors_text}. Please try one of these colors instead!"
+                                    add_message_to_chat("assistant", error_message)
+                                    # Don't try to create the product, just return with error
+                                    return render_template('index.html', mockup_url=mockup_url, attempted_searches=attempted_searches, 
+                                                          search_term=search_term, image_url=image_url, chat_history=chat_history,
+                                                          error_message=error_message, success=False, user_message="",
+                                                          current_logo_settings=current_logo_settings)
                                 
                                 product_id = create_product(shop_id, blueprint_id, print_provider_id, image_id, variant_ids)
                                 mockup_url = get_mockup_image(shop_id, product_id)
@@ -1082,11 +1258,26 @@ def index():
                                 shop_id = get_shop_id()
                                 image_id = upload_image(image_url)
                                 
-                                variants_url = f"https://api.printify.com/v1/catalog/blueprints/{blueprint_id}/print_providers/{print_provider_id}/variants.json"
-                                r = requests.get(variants_url, headers=headers)
-                                r.raise_for_status()
-                                response_data = r.json()
-                                variant_ids = [v["id"] for v in response_data["variants"]]
+                                # Extract color from user message
+                                requested_color = extract_color_from_message(user_message)
+                                
+                                # If a color was requested, filter variants for that color
+                                variant_ids = get_variants_for_product(blueprint_id, print_provider_id, requested_color)
+                                
+                                # Check if color was not found
+                                if isinstance(variant_ids, dict) and variant_ids.get("error") == "color_not_found":
+                                    available_colors = variant_ids["available_colors"]
+                                    requested_color_name = variant_ids["requested_color"]
+                                    
+                                    # Format the available colors nicely
+                                    if len(available_colors) <= 3:
+                                        colors_text = ", ".join(available_colors)
+                                    else:
+                                        colors_text = ", ".join(available_colors[:3]) + f", and {len(available_colors)-3} more"
+                                    
+                                    error_message = f"Sorry, '{requested_color_name}' is not available for this {blueprint_title}. Available colors are: {colors_text}. Please try one of these colors instead!"
+                                    add_message_to_chat("assistant", error_message)
+                                    break  # Exit the attempt loop and show error
                                 
                                 product_id = create_product(shop_id, blueprint_id, print_provider_id, image_id, variant_ids)
                                 mockup_url = get_mockup_image(shop_id, product_id)
@@ -1238,15 +1429,28 @@ Explain briefly why each alternative might work for their needs. Be conversation
                             shop_id = get_shop_id()
                             image_id = upload_image(image_url)
                             
-                            variants_url = f"https://api.printify.com/v1/catalog/blueprints/{blueprint_id}/print_providers/{print_provider_id}/variants.json"
-                            r = requests.get(variants_url, headers=headers)
-                            r.raise_for_status()
-                            response_data = r.json()
-                            variant_ids = [v["id"] for v in response_data["variants"]]
+                            # Extract color from user message
+                            requested_color = extract_color_from_message(search_term)
                             
-                            product_id = create_product(shop_id, blueprint_id, print_provider_id, image_id, variant_ids)
-                            mockup_url = get_mockup_image(shop_id, product_id)
-                            success = True
+                            # If a color was requested, filter variants for that color
+                            variant_ids = get_variants_for_product(blueprint_id, print_provider_id, requested_color)
+                            
+                            # Check if color was not found
+                            if isinstance(variant_ids, dict) and variant_ids.get("error") == "color_not_found":
+                                available_colors = variant_ids["available_colors"]
+                                requested_color_name = variant_ids["requested_color"]
+                                
+                                # Format the available colors nicely
+                                if len(available_colors) <= 3:
+                                    colors_text = ", ".join(available_colors)
+                                else:
+                                    colors_text = ", ".join(available_colors[:3]) + f", and {len(available_colors)-3} more"
+                                
+                                error_message = f"Sorry, '{requested_color_name}' is not available for this {blueprint_title}. Available colors are: {colors_text}. Please try one of these colors instead!"
+                            else:
+                                product_id = create_product(shop_id, blueprint_id, print_provider_id, image_id, variant_ids)
+                                mockup_url = get_mockup_image(shop_id, product_id)
+                                success = True
                         else:
                             error_message = f"No print providers found for '{search_term}'."
                     else:
@@ -1264,16 +1468,29 @@ Explain briefly why each alternative might work for their needs. Be conversation
                                     shop_id = get_shop_id()
                                     image_id = upload_image(image_url)
                                     
-                                    variants_url = f"https://api.printify.com/v1/catalog/blueprints/{blueprint_id}/print_providers/{print_provider_id}/variants.json"
-                                    r = requests.get(variants_url, headers=headers)
-                                    r.raise_for_status()
-                                    response_data = r.json()
-                                    variant_ids = [v["id"] for v in response_data["variants"]]
+                                    # Extract color from user message
+                                    requested_color = extract_color_from_message(search_term)
                                     
-                                    product_id = create_product(shop_id, blueprint_id, print_provider_id, image_id, variant_ids)
-                                    mockup_url = get_mockup_image(shop_id, product_id)
-                                    success = True
-                                    error_message = None
+                                    # If a color was requested, filter variants for that color
+                                    variant_ids = get_variants_for_product(blueprint_id, print_provider_id, requested_color)
+                                    
+                                    # Check if color was not found
+                                    if isinstance(variant_ids, dict) and variant_ids.get("error") == "color_not_found":
+                                        available_colors = variant_ids["available_colors"]
+                                        requested_color_name = variant_ids["requested_color"]
+                                        
+                                        # Format the available colors nicely
+                                        if len(available_colors) <= 3:
+                                            colors_text = ", ".join(available_colors)
+                                        else:
+                                            colors_text = ", ".join(available_colors[:3]) + f", and {len(available_colors)-3} more"
+                                        
+                                        error_message = f"Sorry, '{requested_color_name}' is not available for this {blueprint_title}. Available colors are: {colors_text}. Please try one of these colors instead!"
+                                    else:
+                                        product_id = create_product(shop_id, blueprint_id, print_provider_id, image_id, variant_ids)
+                                        mockup_url = get_mockup_image(shop_id, product_id)
+                                        success = True
+                                        error_message = None
                 except Exception as e:
                     error_message = f"Error: {str(e)}"
     
@@ -1283,5 +1500,9 @@ Explain briefly why each alternative might work for their needs. Be conversation
                           error_message=error_message, success=success, user_message="",
                           current_logo_settings=current_logo_settings)
 
+# For Vercel deployment
+app = app
+
 if __name__ == '__main__':
-    app.run(debug=True, port=5001)
+    # For local development
+    app.run(debug=True, port=5000)
