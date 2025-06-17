@@ -847,67 +847,48 @@ def get_ai_suggestion(user_message):
 # =============================================================================
 
 def extract_current_product_type(chat_history):
-    """Extract the most recent product type from chat history"""
+    """Extract the most recent product type from chat history or product memory"""
+    global current_product_memory
+    
+    # First, check if we have a current product in memory (most reliable)
+    if current_product_memory.get("blueprint_title"):
+        product_title = current_product_memory["blueprint_title"]
+        add_debug_log(f"📋 Using product from memory: {product_title}")
+        return product_title.lower()
+    
     # Look through recent messages to find a product mention
-    product_types = ['t-shirt', 'shirt', 'hat', 'mug', 'tote', 'bag', 'sticker', 'poster', 'sweatshirt', 'hoodie']
+    product_types = ['t-shirt', 'shirt', 'hat', 'cap', 'baseball cap', 'mug', 'tote', 'bag', 'sticker', 'poster', 'sweatshirt', 'hoodie']
     
-    # Keep track of the most recent exact product name found
-    exact_product_name = None
-    
-    # First, look for success messages with product names
+    # Look for success messages with product names, but be more careful about extraction
     for msg in reversed(chat_history):
         if msg["role"] == "assistant" and "found a" in msg["content"].lower():
-            # Extract the product type from a success message like "I found a Hat product for you!"
             content = msg["content"].lower()
-            product_match = re.search(r"found a ([^!]+) product", content)
+            # More specific pattern to avoid catching colors as products
+            product_match = re.search(r"found a ([^!]+?) product for you", content)
             if product_match:
-                found_product = product_match.group(1).strip().lower()
-                # Save the exact product name
-                exact_product_name = found_product
-                # Get the main product type
-                for product in product_types:
-                    if product in found_product.lower():
-                        print(f"Found product type from success message: {product}")
-                        return found_product
+                found_product = product_match.group(1).strip()
+                # Skip if it's just a color word
+                if found_product not in ['red', 'blue', 'green', 'black', 'white', 'yellow', 'pink', 'purple', 'orange', 'brown', 'gray', 'grey']:
+                    add_debug_log(f"📋 Found product from success message: {found_product}")
+                    return found_product
     
-    # Next, check for product change messages like "Let me show you a t-shirt instead"
+    # Look for initial user product requests (like "hat", "mug", etc.)
     for msg in reversed(chat_history):
-        if msg["role"] == "assistant" and "show you a" in msg["content"].lower():
-            content = msg["content"].lower()
-            product_match = re.search(r"show you a ([^ ]+)", content)
-            if product_match:
-                product_type = product_match.group(1).strip().lower()
-                print(f"Found product type from change message: {product_type}")
-                return product_type
+        if msg["role"] == "user":
+            user_content = msg["content"].lower().strip()
+            # Check if it's a simple product request (single word or simple phrase)
+            if user_content in product_types:
+                add_debug_log(f"📋 Found product from user request: {user_content}")
+                return user_content
+            # Check for compound product names
+            for product_type in product_types:
+                if product_type in user_content and len(user_content.split()) <= 3:
+                    # Only consider it if the message is short (likely a product request, not a color change)
+                    add_debug_log(f"📋 Found product type from user request: {product_type}")
+                    return product_type
     
-    # If we found an exact product name, return it
-    if exact_product_name:
-        print(f"Using exact product name: {exact_product_name}")
-        return exact_product_name
-    
-    # If adjusting a logo but no product found in messages, check the last product type request
-    for msg in reversed(chat_history):
-        if msg["role"] == "user" and any(request in msg["content"].lower() for request in ["make it a", "i want a", "let me see a"]):
-            for product in product_types:
-                if product in msg["content"].lower():
-                    # If user specifically asked for a product type, use that
-                    if product == "shirt" and ("t-" in msg["content"].lower() or "tee" in msg["content"].lower()):
-                        print(f"Found t-shirt from user request")
-                        return "t-shirt"
-                    elif product == "shirt" and ("sweat" in msg["content"].lower() or "hoodie" in msg["content"].lower()):
-                        print(f"Found sweatshirt from user request")
-                        return "sweatshirt"
-                    print(f"Found {product} from user request")
-                    return product
-    
-    # Look for any t-shirt related request as a priority
-    for msg in reversed(chat_history):
-        if msg["role"] == "user" and "t-shirt" in msg["content"].lower():
-            print("Defaulting to t-shirt based on history")
-            return "t-shirt"
-    
-    # Default fallback to t-shirt instead of hat
-    print("Using default fallback: t-shirt")
+    # Default fallback 
+    add_debug_log("📋 Using default fallback: t-shirt")
     return "t-shirt"
 
 # =============================================================================
@@ -1186,10 +1167,10 @@ def index():
             
             # If this is a color change request, keep the same product but change color
             if color_change_request and not product_type_change_request:
-                # Extract the current product type from chat history
+                # Extract the current product type from chat history or memory
                 current_product = extract_current_product_type(chat_history)
                 search_term = current_product
-                print(f"Color change requested for: {search_term}")
+                add_debug_log(f"🎨 Color change requested for: {search_term}")
                 should_create_product = True
                 
                 # Extract the requested color
