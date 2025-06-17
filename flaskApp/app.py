@@ -341,25 +341,25 @@ def find_blueprint_id(search_term):
     
     # Fallback: Direct API search (legacy compatibility)
     try:
-        url = "https://api.printify.com/v1/catalog/blueprints.json"
-        res = requests.get(url, headers=headers)
-        res.raise_for_status()
-        blueprints = res.json()
-        
-        search_term_lower = search_term.lower()
-        
+    url = "https://api.printify.com/v1/catalog/blueprints.json"
+    res = requests.get(url, headers=headers)
+    res.raise_for_status()
+    blueprints = res.json()
+    
+    search_term_lower = search_term.lower()
+    
         # Try exact match first
-        for blueprint in blueprints:
-            if search_term_lower == blueprint['title'].lower():
-                add_debug_log(f"✅ Exact match found: {blueprint['title']} (ID: {blueprint['id']})")
-                return blueprint['id'], blueprint['title']
-        
+    for blueprint in blueprints:
+        if search_term_lower == blueprint['title'].lower():
+            add_debug_log(f"✅ Exact match found: {blueprint['title']} (ID: {blueprint['id']})")
+            return blueprint['id'], blueprint['title']
+    
         # Try partial match
-        for blueprint in blueprints:
-            if search_term_lower in blueprint['title'].lower():
-                add_debug_log(f"✅ Partial match found: {blueprint['title']} (ID: {blueprint['id']})")
-                return blueprint['id'], blueprint['title']
-                
+    for blueprint in blueprints:
+        if search_term_lower in blueprint['title'].lower():
+            add_debug_log(f"✅ Partial match found: {blueprint['title']} (ID: {blueprint['id']})")
+            return blueprint['id'], blueprint['title']
+    
     except Exception as e:
         add_debug_log(f"❌ Fallback API search failed: {e}")
     
@@ -793,7 +793,7 @@ def get_ai_suggestion(user_message):
             return {"search_term": search_term, "adjust_logo": True}, ai_message
         
         # Use LLM for intelligent product selection
-        else:
+    else:
             # Format conversation history for LLM
             formatted_history = []
             for msg in chat_history[-5:]:  # Last 5 messages for context
@@ -1083,7 +1083,7 @@ def get_variants_for_product(blueprint_id, print_provider_id, requested_color=No
         for variant in all_variants:
             color = variant.get("options", {}).get("color", "").lower()
             if requested_color.lower() in color or color in requested_color.lower():
-                current_product_memory["current_color"] = requested_color
+            current_product_memory["current_color"] = requested_color
                 return [v["id"] for v in all_variants if requested_color.lower() in v.get("options", {}).get("color", "").lower()]
         
         # No match found
@@ -1174,6 +1174,8 @@ def index():
                                           ["make it a", "change to", "switch to", "i want a", 
                                            "show me a", "get me a", "now make it a", "can i see a"])
             
+            add_debug_log(f"🔍 Request analysis - Color change: {color_change_request}, Product change: {product_type_change_request}")
+            
             # Check if this is a recommendation request
             recommendation_request = any(term in user_message.lower() 
                                for term in ['recommend', 'suggestion', 'ideas', 'what about', 
@@ -1199,6 +1201,9 @@ def index():
                 
                 # Create a simple suggestion object for consistency
                 suggestion = {"search_term": search_term, "conversational": False, "adjust_logo": False}
+                
+                # Skip LLM processing for color changes - we already have what we need
+                add_debug_log(f"🎨 Color change detected, using current product: {search_term}")
             # If this is a product type change, extract the new product type directly
             elif product_type_change_request:
                 # Get what product they want to change to
@@ -1245,6 +1250,7 @@ def index():
                 # The LLM now handles ALL product requests intelligently, including
                 # simple ones like "hat" or "mug" as well as complex descriptions.
                 
+                add_debug_log(f"🤖 Calling LLM system for: '{user_message}'")
                 # Get AI suggestion for all types of requests
                 suggestion, ai_response = get_ai_suggestion(user_message)
                 search_term = suggestion.get('search_term')
