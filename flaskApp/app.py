@@ -1199,6 +1199,68 @@ def index():
                 
                 # Set a flag to prevent re-processing
                 color_change_handled = True
+                
+                # Handle color change product creation immediately
+                try:
+                    add_debug_log(f"🔍 Searching for blueprint with term: '{search_term}'")
+                    blueprint_id, blueprint_title = find_blueprint_id(search_term)
+                    add_debug_log(f"📦 Found blueprint: ID={blueprint_id}, Title='{blueprint_title}'")
+                    
+                    if blueprint_id:
+                        providers = get_print_providers(blueprint_id)
+                        if providers:
+                            print_provider_id = providers[0]['id']
+                            
+                            shop_id = get_shop_id()
+                            image_id = upload_image(image_url)
+                            
+                            # Use the extracted color for filtering variants
+                            variant_ids = get_variants_for_product(blueprint_id, print_provider_id, requested_color)
+                            
+                            # Check if color was not found
+                            if isinstance(variant_ids, dict) and variant_ids.get("error") == "color_not_found":
+                                available_colors = variant_ids["available_colors"]
+                                requested_color_name = variant_ids["requested_color"]
+                                
+                                # Format the available colors nicely
+                                if len(available_colors) <= 3:
+                                    colors_text = ", ".join(available_colors)
+                                else:
+                                    colors_text = ", ".join(available_colors[:3]) + f", and {len(available_colors)-3} more"
+                                
+                                error_message = f"Sorry, '{requested_color_name}' is not available for this {blueprint_title}. Available colors are: {colors_text}. Please try one of these colors instead!"
+                                add_message_to_chat("assistant", error_message)
+                            else:
+                                product_id = create_product(shop_id, blueprint_id, print_provider_id, image_id, variant_ids)
+                                mockup_url = get_mockup_image(shop_id, product_id)
+                                success = True
+                                
+                                # Update product memory
+                                current_product_memory.update({
+                                    "blueprint_id": blueprint_id,
+                                    "blueprint_title": blueprint_title,
+                                    "print_provider_id": print_provider_id,
+                                    "last_mockup_url": mockup_url
+                                })
+                                
+                                # Add confirmation message with alternatives for color change
+                                add_message_to_chat("assistant", f"I found a {blueprint_title} product for you! Here's what it looks like with your image.")
+                                
+                                # Add product alternatives suggestion
+                                if current_product_memory.get("available_colors"):
+                                    colors_text = ", ".join(current_product_memory["available_colors"])
+                                    color_message = f"Available colors: {colors_text}. Just say 'make it [color]' to change the color!"
+                                    add_message_to_chat("assistant", color_message)
+                        else:
+                            error_message = f"Sorry, I couldn't find any print providers for this {blueprint_title}."
+                            add_message_to_chat("assistant", error_message)
+                    else:
+                        error_message = f"Sorry, I couldn't find that product. Would you like to try a different product?"
+                        add_message_to_chat("assistant", error_message)
+                        
+                except Exception as e:
+                    error_message = f"Error processing color change: {str(e)}"
+                    add_message_to_chat("assistant", error_message)
             # If this is a product type change, extract the new product type directly
             elif product_type_change_request:
                 # Get what product they want to change to
@@ -1407,8 +1469,8 @@ def index():
                         mockup_url = request.form['mockup_url']
                         success = True
             
-            # Try up to 3 search terms if we should create a product
-            if should_create_product:
+            # Try up to 3 search terms if we should create a product and haven't already handled it
+            if should_create_product and not color_change_handled:
                 original_search_term = search_term
                 attempted_terms = []  # Track all terms we've tried to avoid duplicates
                 
@@ -1481,6 +1543,30 @@ def index():
                                         colors_text = ", ".join(current_product_memory["available_colors"])
                                         color_message = f"Available colors: {colors_text}. Just say 'make it [color]' to change the color!"
                                         add_message_to_chat("assistant", color_message)
+                                    
+                                    # Add product alternatives suggestion
+                                    try:
+                                        # Get similar products for alternatives
+                                        alternatives_prompt = f"""The user requested a '{original_search_term}' and I found a '{blueprint_title}'. 
+Suggest 2-3 alternative products that might also work for their needs. Be brief and conversational.
+Format as: "If you're looking for alternatives, I can also show you [product1], [product2], or [product3]. Just let me know!"
+Only suggest real product types like t-shirts, mugs, hats, bags, etc."""
+                                        
+                                        alternatives_response = openai.chat.completions.create(
+                                            model="gpt-3.5-turbo",
+                                            messages=[
+                                                {"role": "system", "content": "You are a helpful merchandise assistant suggesting product alternatives. Keep suggestions brief and practical."},
+                                                {"role": "user", "content": alternatives_prompt}
+                                            ]
+                                        )
+                                        
+                                        alternatives_message = alternatives_response.choices[0].message.content
+                                        add_message_to_chat("assistant", alternatives_message)
+                                        
+                                    except Exception as e:
+                                        add_debug_log(f"⚠️ Failed to generate alternatives: {e}")
+                                        # Fallback to a simple message
+                                        add_message_to_chat("assistant", "If you'd like to see other product options, just ask me for alternatives like 't-shirt', 'mug', or 'hat'!")
                                 
                                 break
                     except Exception as e:
