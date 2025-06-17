@@ -88,23 +88,30 @@ def init_product_catalog():
     global product_catalog, conversation_manager, color_selector, error_handler
     if product_catalog is None:
         try:
+            add_server_log("Starting product catalog initialization...")
             product_catalog = create_product_catalog()
+            add_server_log("Product catalog created, loading catalog...")
             success = product_catalog.load_catalog()
             if success:
                 add_server_log("Product catalog initialized successfully")
                 # Initialize conversation manager with the catalog
+                add_server_log("Initializing conversation manager...")
                 conversation_manager = ConversationManager(product_catalog)
                 add_server_log("Conversation manager initialized successfully")
                 # Initialize intelligent color selector
+                add_server_log("Initializing intelligent color selector...")
                 color_selector = IntelligentColorSelector()
                 add_server_log("Intelligent color selector initialized successfully")
                 # Initialize intelligent error handler
+                add_server_log("Initializing intelligent error handler...")
                 error_handler = IntelligentErrorHandler(product_catalog, headers)
                 add_server_log("Intelligent error handler initialized successfully")
             else:
                 add_server_log("Failed to initialize product catalog")
         except Exception as e:
             add_server_log(f"Error initializing product catalog: {e}")
+            import traceback
+            add_server_log(f"Full traceback: {traceback.format_exc()}")
             product_catalog = None
             conversation_manager = None
             color_selector = None
