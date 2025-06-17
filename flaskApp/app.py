@@ -131,10 +131,9 @@ debug_logs = []
 
 def check_openai_client():
     """Check if OpenAI client is available and working"""
-    global openai_client
-    if openai_client is None:
-        raise Exception("OpenAI client not initialized - check API key and network connection")
-    return openai_client
+    if not openai.api_key:
+        raise Exception("OpenAI API key not initialized - check API key and network connection")
+    return True
 
 def add_debug_log(message):
     """Add a debug message to the logs"""
@@ -146,6 +145,59 @@ def add_debug_log(message):
         debug_logs.pop(0)
     print(message)  # Also print to console
     add_server_log(f"DEBUG: {message}")  # Add to in-memory server logs
+
+def extract_color_from_message(message):
+    """Extract color from user message - simplified fallback implementation"""
+    if not message:
+        return None
+    
+    # Basic color extraction - this was replaced by intelligent color selection
+    common_colors = ['red', 'blue', 'green', 'yellow', 'black', 'white', 'gray', 'grey', 
+                    'pink', 'purple', 'orange', 'brown', 'navy', 'maroon', 'cyan']
+    
+    message_lower = message.lower()
+    for color in common_colors:
+        if color in message_lower:
+            return color
+    return None
+
+def handle_compound_words(search_term):
+    """Handle compound words - simplified fallback implementation"""
+    if not search_term:
+        return []
+    
+    # Basic compound word handling - this was replaced by AI understanding
+    compound_map = {
+        'lampshade': ['lamp', 'shade'],
+        'mousepad': ['mouse', 'pad'],
+        'keychain': ['key', 'chain'],
+        'doormat': ['door', 'mat'],
+        'pillowcase': ['pillow', 'case']
+    }
+    
+    return compound_map.get(search_term.lower(), [])
+
+def simplify_search_term(search_term):
+    """Simplify search terms - simplified fallback implementation"""
+    if not search_term:
+        return search_term
+    
+    # Basic term simplification - this was replaced by AI understanding
+    simplification_map = {
+        'sweatshirt': 'hoodie',
+        'sweater': 'hoodie',
+        'jumper': 'hoodie',
+        'pullover': 'hoodie',
+        'tshirt': 't-shirt',
+        'tee': 't-shirt',
+        'cap': 'hat',
+        'beanie': 'hat',
+        'cup': 'mug',
+        'tumbler': 'mug'
+    }
+    
+    term_lower = search_term.lower().strip()
+    return simplification_map.get(term_lower, search_term)
 
 # =============================================================================
 # PRODUCT CATALOG AND SELECTION SYSTEM
@@ -585,7 +637,7 @@ Format your response in natural language, not as JSON."""
             add_message_to_chat("assistant", ai_message)
             
             # Try to extract a primary recommendation from the text to use as search term
-            follow_up = openai_client.chat.completions.create(
+            follow_up = openai.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": "Extract the main product type being recommended in this message. Return a simple JSON with just one key 'search_term' containing the product type."},
@@ -615,7 +667,7 @@ Format your response in natural language, not as JSON."""
                 return {"search_term": current_product}, ai_message
         else:
             # Use the original product extraction approach for non-recommendation requests
-            response = openai_client.chat.completions.create(
+            response = openai.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that helps users find products on Printify. Your task is to extract the product type and relevant details from the user's message. Return a JSON with 'search_term' and optionally 'image_url' if mentioned. Focus on the main product type (hat, shirt, mug, etc.) and key attributes. If the user mentions a compound word (like 'lampshade'), consider breaking it into parts (lamp, shade) or look for synonyms or related terms that might be more common on an e-commerce platform."},
@@ -642,7 +694,7 @@ Format your response in natural language, not as JSON."""
                 return suggestion, ai_message
             except Exception as e:
                 # If JSON parsing fails, have the AI try again with a more structured format
-                follow_up = openai_client.chat.completions.create(
+                follow_up = openai.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
                         {"role": "system", "content": "Extract the product information from the conversation and return ONLY a JSON object with keys 'search_term' and optionally 'image_url'."},
@@ -1464,7 +1516,7 @@ Explain briefly why each alternative might work for their needs. Be conversation
                             
                             try:
                                 # Ask the AI for suggestions
-                                suggestions_response = openai_client.chat.completions.create(
+                                suggestions_response = openai.chat.completions.create(
                                     model="gpt-3.5-turbo",
                                     messages=[
                                         {"role": "system", "content": "You are a helpful merchandise assistant suggesting alternative products."},
