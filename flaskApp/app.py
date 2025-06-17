@@ -341,25 +341,25 @@ def find_blueprint_id(search_term):
     
     # Fallback: Direct API search (legacy compatibility)
     try:
-    url = "https://api.printify.com/v1/catalog/blueprints.json"
-    res = requests.get(url, headers=headers)
-    res.raise_for_status()
-    blueprints = res.json()
-    
-    search_term_lower = search_term.lower()
-    
+        url = "https://api.printify.com/v1/catalog/blueprints.json"
+        res = requests.get(url, headers=headers)
+        res.raise_for_status()
+        blueprints = res.json()
+        
+        search_term_lower = search_term.lower()
+        
         # Try exact match first
-    for blueprint in blueprints:
-        if search_term_lower == blueprint['title'].lower():
-            add_debug_log(f"✅ Exact match found: {blueprint['title']} (ID: {blueprint['id']})")
-            return blueprint['id'], blueprint['title']
-    
+        for blueprint in blueprints:
+            if search_term_lower == blueprint['title'].lower():
+                add_debug_log(f"✅ Exact match found: {blueprint['title']} (ID: {blueprint['id']})")
+                return blueprint['id'], blueprint['title']
+        
         # Try partial match
-    for blueprint in blueprints:
-        if search_term_lower in blueprint['title'].lower():
-            add_debug_log(f"✅ Partial match found: {blueprint['title']} (ID: {blueprint['id']})")
-            return blueprint['id'], blueprint['title']
-    
+        for blueprint in blueprints:
+            if search_term_lower in blueprint['title'].lower():
+                add_debug_log(f"✅ Partial match found: {blueprint['title']} (ID: {blueprint['id']})")
+                return blueprint['id'], blueprint['title']
+                
     except Exception as e:
         add_debug_log(f"❌ Fallback API search failed: {e}")
     
