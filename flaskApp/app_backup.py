@@ -1083,7 +1083,7 @@ def get_variants_for_product(blueprint_id, print_provider_id, requested_color=No
         for variant in all_variants:
             color = variant.get("options", {}).get("color", "").lower()
             if requested_color.lower() in color or color in requested_color.lower():
-                current_product_memory["current_color"] = requested_color
+            current_product_memory["current_color"] = requested_color
                 return [v["id"] for v in all_variants if requested_color.lower() in v.get("options", {}).get("color", "").lower()]
         
         # No match found
