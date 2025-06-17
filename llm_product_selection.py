@@ -156,8 +156,7 @@ class LLMProductSelector:
                 model="gpt-4o-mini",  # Use GPT-4 for better reasoning
                 messages=messages,
                 temperature=0.3,  # Lower temperature for more consistent responses
-                max_tokens=1000,
-                response_format={"type": "json_object"}
+                max_tokens=1000
             )
             
             # Extract JSON response
