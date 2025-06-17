@@ -867,8 +867,15 @@ def extract_current_product_type(chat_history):
             product_match = re.search(r"found a ([^!]+?) product for you", content)
             if product_match:
                 found_product = product_match.group(1).strip()
-                # Skip if it's just a color word
-                if found_product not in ['red', 'blue', 'green', 'black', 'white', 'yellow', 'pink', 'purple', 'orange', 'brown', 'gray', 'grey']:
+                # Skip if it's just a color word or contains color words at the beginning
+                color_words = ['red', 'blue', 'green', 'black', 'white', 'yellow', 'pink', 'purple', 'orange', 'brown', 'gray', 'grey', 'navy', 'dark', 'light', 'bright']
+                
+                # Split the found product and check if it starts with a color
+                words = found_product.split()
+                if words and words[0] in color_words:
+                    # Skip this match - it's likely "red hat" instead of just "hat"
+                    continue
+                elif found_product not in color_words:
                     add_debug_log(f"📋 Found product from success message: {found_product}")
                     return found_product
     
@@ -1165,6 +1172,10 @@ def index():
                                           'what should i', 'what can i', 'can you suggest',
                                           'swag', 'merchandise', 'merch'])
             
+            # Initialize processing flags
+            color_change_handled = False
+            should_create_product = False
+            
             # If this is a color change request, keep the same product but change color
             if color_change_request and not product_type_change_request:
                 # Extract the current product type from chat history or memory
@@ -1180,11 +1191,14 @@ def index():
                 else:
                     add_message_to_chat("assistant", f"Let me update the {search_term} for you!")
                 
-                # Create a simple suggestion object for consistency
+                # Create a simple suggestion object for consistency  
                 suggestion = {"search_term": search_term, "conversational": False, "adjust_logo": False}
                 
                 # Skip LLM processing for color changes - we already have what we need
-                add_debug_log(f"🎨 Color change detected, using current product: {search_term}")
+                add_debug_log(f"🎨 Color change complete, proceeding with search_term: {search_term}")
+                
+                # Set a flag to prevent re-processing
+                color_change_handled = True
             # If this is a product type change, extract the new product type directly
             elif product_type_change_request:
                 # Get what product they want to change to
