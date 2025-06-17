@@ -47,8 +47,16 @@ def add_server_log(message):
         server_logs.pop(0)
     logger.info(message)  # Also log to console (visible in Vercel logs)
 
-# Get API keys from environment variables
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+# API Key Toggle for local vs production testing
+USE_LOCAL_KEYS = os.getenv('USE_LOCAL_KEYS', 'false').lower() == 'true'
+
+if USE_LOCAL_KEYS:
+    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY_LOCAL') or os.getenv('OPENAI_API_KEY')
+    print("🔧 Flask app using LOCAL API keys")
+else:
+    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY_PROD') or os.getenv('OPENAI_API_KEY')
+    print("🚀 Flask app using PRODUCTION API keys")
+
 PRINTIFY_API_TOKEN = os.getenv('PRINTIFY_API_TOKEN')
 
 if not OPENAI_API_KEY or not PRINTIFY_API_TOKEN:
@@ -964,34 +972,137 @@ def add_message_to_chat(role, content):
 
 def get_variants_for_product(blueprint_id, print_provider_id, requested_color=None):
     """
-    Get variants for a product using intelligent color selection.
+    Get variants for a product using cached data from product catalog.
     
-    MODERN APPROACH: This function now uses the IntelligentColorSelector
-    to provide AI-driven color matching instead of hardcoded heuristics.
+    MODERN APPROACH: This function now uses cached variant data from the
+    ProductCatalog instead of hitting the Printify API every time.
     
-    The new system:
-    • Uses LLM to understand color requests in natural language
-    • Provides intelligent color matching with confidence scoring  
-    • Handles color synonyms, relationships, and variations
-    • Offers smart alternatives when exact matches aren't available
-    • Eliminates all hardcoded color matching patterns
+    The cached system:
+    • Uses pre-loaded variant data from product_cache.json
+    • Eliminates API calls for color/variant information  
+    • Provides instant color matching and availability
+    • Uses IntelligentColorSelector for smart color matching
+    • Maintains compatibility with existing code
     
     Args:
         blueprint_id: Product blueprint ID
-        print_provider_id: Print provider ID
+        print_provider_id: Print provider ID (optional, uses cached data)
         requested_color: User's color request (optional)
         
     Returns:
         List of variant IDs or error dict with alternatives
     """
-    global current_product_memory, color_selector
+    global current_product_memory, color_selector, product_catalog
     
-    # Initialize color selector if needed
-    if color_selector is None:
+    # Initialize product catalog if needed
+    if product_catalog is None:
         init_product_catalog()
     
+    # Use cached variant data from product catalog
+    if product_catalog is not None:
+        try:
+            # Get variants from cache instead of API
+            cached_variants = product_catalog.get_product_variants(blueprint_id, print_provider_id)
+            
+            if not cached_variants:
+                add_debug_log(f"❌ No cached variants found for blueprint {blueprint_id}")
+                return []
+            
+            add_debug_log(f"🎨 Found {len(cached_variants)} cached variants for blueprint {blueprint_id}")
+            
+            # Convert cached variants to the format expected by the rest of the code
+            all_variants = []
+            for cached_variant in cached_variants:
+                variant_dict = {
+                    "id": cached_variant.id,
+                    "title": cached_variant.title,
+                    "options": {
+                        "color": cached_variant.color,
+                        "size": cached_variant.size
+                    }
+                }
+                all_variants.append(variant_dict)
+            
+            # Get available colors directly from cache
+            available_colors = product_catalog.get_available_colors(blueprint_id)
+            current_product_memory["available_colors"] = available_colors
+            
+            add_debug_log(f"🎨 Available colors from cache: {available_colors}")
+            
+            # If no specific color requested, return all variants
+            if not requested_color:
+                variant_ids = [v["id"] for v in all_variants]
+                add_debug_log(f"✅ Returning all {len(variant_ids)} variants (no color filter)")
+                return variant_ids
+            
+            # Use intelligent color selection system
+            if color_selector is not None:
+                try:
+                    # Get product context for intelligent color selection
+                    product_context = {
+                        "id": blueprint_id,
+                        "title": current_product_memory.get("blueprint_title", "Unknown Product")
+                    }
+                    
+                    selection_result = color_selector.select_color_variants(
+                        all_variants=all_variants,
+                        requested_color=requested_color,
+                        product_context=product_context
+                    )
+                    
+                    # Update product memory with results
+                    if selection_result.selected_color:
+                        current_product_memory["current_color"] = selection_result.selected_color
+                    
+                    # Log results
+                    if selection_result.selected_color:
+                        add_debug_log(f"🤖 AI selected color: '{selection_result.selected_color}' (confidence: {selection_result.color_match.confidence:.2f})")
+                        add_debug_log(f"✅ Found {len(selection_result.variant_ids)} matching variants from cache")
+                        return selection_result.variant_ids
+                    elif selection_result.error_message:
+                        add_debug_log(f"❌ {selection_result.error_message}")
+                        # Return error in legacy format for compatibility
+                        return {
+                            "error": "color_not_found", 
+                            "available_colors": available_colors,
+                            "requested_color": requested_color,
+                            "alternatives": selection_result.color_match.alternatives if selection_result.color_match else []
+                        }
+                        
+                except Exception as e:
+                    add_debug_log(f"⚠️ AI color selection failed: {e}")
+                    # Fall through to basic matching
+            
+            # Fallback: Basic color matching using cached data
+            add_debug_log("Using fallback color matching with cached data")
+            matching_variants = []
+            
+            for variant in all_variants:
+                color = variant.get("options", {}).get("color", "").lower()
+                if requested_color.lower() in color or color in requested_color.lower():
+                    matching_variants.append(variant)
+            
+            if matching_variants:
+                current_product_memory["current_color"] = requested_color
+                variant_ids = [v["id"] for v in matching_variants]
+                add_debug_log(f"✅ Basic match found {len(variant_ids)} variants for color '{requested_color}'")
+                return variant_ids
+            else:
+                add_debug_log(f"❌ No color match found for '{requested_color}' in cached data")
+                return {
+                    "error": "color_not_found", 
+                    "available_colors": available_colors,
+                    "requested_color": requested_color
+                }
+                
+        except Exception as e:
+            add_debug_log(f"⚠️ Error using cached variant data: {e}")
+            # Fall through to API fallback
+    
+    # Fallback to API if cache fails (legacy compatibility)
+    add_debug_log("🔄 Falling back to API for variant data")
     try:
-        # Fetch variants from Printify API
+        # Fetch variants from Printify API (original method)
         res = requests.get(
             f"https://api.printify.com/v1/catalog/blueprints/{blueprint_id}/print_providers/{print_provider_id}/variants.json", 
             headers=headers
@@ -999,53 +1110,9 @@ def get_variants_for_product(blueprint_id, print_provider_id, requested_color=No
         res.raise_for_status()
         all_variants = res.json()["variants"]
         
-        add_debug_log(f"🎨 Fetched {len(all_variants)} variants for blueprint {blueprint_id}")
+        add_debug_log(f"🎨 Fetched {len(all_variants)} variants from API for blueprint {blueprint_id}")
         
-        # Get product context for intelligent color selection
-        product_context = {
-            "id": blueprint_id,
-            "title": current_product_memory.get("blueprint_title", "Unknown Product")
-        }
-        
-        # Use intelligent color selection system
-        if color_selector is not None:
-            try:
-                selection_result = color_selector.select_color_variants(
-                    all_variants=all_variants,
-                    requested_color=requested_color,
-                    product_context=product_context
-                )
-                
-                # Update product memory with results
-                current_product_memory["available_colors"] = selection_result.available_colors
-                if selection_result.selected_color:
-                    current_product_memory["current_color"] = selection_result.selected_color
-                
-                # Log results
-                if selection_result.selected_color:
-                    add_debug_log(f"🤖 AI selected color: '{selection_result.selected_color}' (confidence: {selection_result.color_match.confidence:.2f})")
-                    add_debug_log(f"✅ Found {len(selection_result.variant_ids)} matching variants")
-                    return selection_result.variant_ids
-                elif selection_result.error_message:
-                    add_debug_log(f"❌ {selection_result.error_message}")
-                    # Return error in legacy format for compatibility
-                    return {
-                        "error": "color_not_found", 
-                        "available_colors": selection_result.available_colors,
-                        "requested_color": requested_color,
-                        "alternatives": selection_result.color_match.alternatives if selection_result.color_match else []
-                    }
-                else:
-                    # No specific color requested - return all variants
-                    add_debug_log("No color requested, returning all variants")
-                    return selection_result.variant_ids
-                    
-            except Exception as e:
-                add_debug_log(f"⚠️ AI color selection failed: {e}")
-                # Fall through to fallback method
-        
-        # Fallback: Basic color extraction and matching
-        add_debug_log("Using fallback color selection")
+        # Extract available colors
         available_colors = []
         colors_set = set()
         
@@ -1078,7 +1145,7 @@ def get_variants_for_product(blueprint_id, print_provider_id, requested_color=No
         }
         
     except Exception as e:
-        add_debug_log(f"❌ Error in get_variants_for_product: {e}")
+        add_debug_log(f"❌ Error in API fallback: {e}")
         return []
 
 @app.route('/', methods=['GET', 'POST'])
@@ -1265,9 +1332,9 @@ def index():
                         error_message = f"Sorry, I couldn't find that product. Would you like to try a different product?"
                         add_message_to_chat("assistant", error_message)
                         
-                                    except Exception as e:
-                        error_message = f"Error processing color change: {str(e)}"
-                        add_message_to_chat("assistant", error_message)
+                except Exception as e:
+                    error_message = f"Error processing color change: {str(e)}"
+                    add_message_to_chat("assistant", error_message)
                         
                 # Return immediately after color change processing
                 return render_template('index.html', mockup_url=mockup_url, attempted_searches=attempted_searches, 
@@ -1384,8 +1451,9 @@ def index():
                                       search_term=search_term, image_url=image_url, chat_history=chat_history,
                                       error_message=error_message, success=success, user_message="",
                                       current_logo_settings=current_logo_settings, debug_logs=debug_logs)
-                else:
-                    # If no specific product type found in the request, use AI suggestion
+                
+                # If no specific product type found in the request, use AI suggestion
+                if not search_term:
                     suggestion, ai_response = get_ai_suggestion(user_message)
                     search_term = suggestion.get('search_term')
                     add_debug_log(f"🤖 AI suggested product: {search_term}")

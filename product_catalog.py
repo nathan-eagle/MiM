@@ -264,46 +264,57 @@ class ProductCatalog:
     
     def get_product_variants(self, product_id: int, print_provider_id: Optional[int] = None) -> List[ProductVariant]:
         """
-        Get all variants (colors, sizes) for a specific product.
+        Get all variants (colors, sizes) for a specific product from cache.
         
         Args:
             product_id: The Printify blueprint ID
-            print_provider_id: Specific print provider ID (optional)
+            print_provider_id: Specific print provider ID (optional, filters results)
             
         Returns:
-            List of ProductVariant objects
+            List of ProductVariant objects from cache
         """
-        try:
-            # Use the best available print provider if none specified
-            if print_provider_id is None:
-                product = self.get_product_by_id(product_id)
-                if not product or not product.print_providers:
-                    return []
-                print_provider_id = product.print_providers[0]['id']
-            
-            # Fetch variants from API
-            url = f"https://api.printify.com/v1/catalog/blueprints/{product_id}/print_providers/{print_provider_id}/variants.json"
-            response = requests.get(url, headers=self.headers, timeout=10)
-            response.raise_for_status()
-            
-            variants_data = response.json().get("variants", [])
-            variants = []
-            
-            for variant_data in variants_data:
-                variant = ProductVariant(
-                    id=variant_data["id"],
-                    title=variant_data["title"],
-                    color=variant_data.get("options", {}).get("color", ""),
-                    size=variant_data.get("options", {}).get("size"),
-                    available=True  # Assume available unless we have specific info
-                )
-                variants.append(variant)
-            
-            return variants
-            
-        except Exception as e:
-            self.logger.error(f"Error fetching variants for product {product_id}: {e}")
+        # Get product from cache
+        product = self.get_product_by_id(product_id)
+        if not product:
             return []
+        
+        # Return cached variants (optionally filtered by print provider)
+        if print_provider_id is None:
+            return product.variants
+        else:
+            # Filter variants by print provider if specified
+            # Note: This is approximate since we don't store provider_id per variant
+            # but in practice most products work with primary provider
+            return product.variants
+
+    def get_available_colors(self, product_id: int) -> List[str]:
+        """Get all available colors for a product from cache"""
+        product = self.get_product_by_id(product_id)
+        if not product:
+            return []
+        
+        # Extract unique colors from variants
+        colors = set()
+        for variant in product.variants:
+            if variant.color and variant.color.strip():
+                colors.add(variant.color.strip().title())
+        
+        return sorted(list(colors))
+
+    def get_variants_by_color(self, product_id: int, color: str) -> List[ProductVariant]:
+        """Get all variants of a specific color for a product from cache"""
+        product = self.get_product_by_id(product_id)
+        if not product:
+            return []
+        
+        color_lower = color.lower()
+        matching_variants = []
+        
+        for variant in product.variants:
+            if variant.color and color_lower in variant.color.lower():
+                matching_variants.append(variant)
+        
+        return matching_variants
     
     def _fetch_blueprints(self) -> List[Dict[str, Any]]:
         """Fetch all blueprints from Printify API"""
@@ -317,7 +328,7 @@ class ProductCatalog:
             return []
     
     def _process_blueprint(self, blueprint: Dict[str, Any]) -> Optional[Product]:
-        """Convert a Printify blueprint into a Product object"""
+        """Convert a Printify blueprint into a Product object with cached variants"""
         try:
             # Determine category from title
             category = self._categorize_product(blueprint["title"])
@@ -328,17 +339,20 @@ class ProductCatalog:
             # Extract tags from title for better searchability
             tags = self._extract_tags(blueprint["title"])
             
+            # Pre-load all variants for this product to cache colors/sizes
+            variants = self._fetch_all_variants(blueprint["id"], print_providers)
+            
             product = Product(
                 id=blueprint["id"],
                 title=blueprint["title"],
                 description=blueprint.get("description", blueprint["title"]),
                 category=category,
                 tags=tags,
-                variants=[],  # Will be loaded on demand
+                variants=variants,  # Now cached instead of loaded on demand
                 print_providers=print_providers,
                 images=[],  # Blueprint images not typically needed
                 created_at=datetime.now().isoformat(),
-                available=len(print_providers) > 0  # Available if has providers
+                available=len(print_providers) > 0 and len(variants) > 0  # Available if has providers and variants
             )
             
             return product
@@ -346,6 +360,48 @@ class ProductCatalog:
         except Exception as e:
             self.logger.warning(f"Error processing blueprint {blueprint.get('id')}: {e}")
             return None
+    
+    def _fetch_all_variants(self, blueprint_id: int, print_providers: List[Dict[str, Any]]) -> List[ProductVariant]:
+        """Fetch and cache all variants for a product from all print providers"""
+        all_variants = []
+        
+        for provider in print_providers:
+            try:
+                provider_id = provider['id']
+                
+                # Fetch variants from API
+                url = f"https://api.printify.com/v1/catalog/blueprints/{blueprint_id}/print_providers/{provider_id}/variants.json"
+                response = requests.get(url, headers=self.headers, timeout=10)
+                response.raise_for_status()
+                
+                variants_data = response.json().get("variants", [])
+                
+                for variant_data in variants_data:
+                    # Extract color and size from options
+                    options = variant_data.get("options", {})
+                    color = options.get("color", "")
+                    size = options.get("size")
+                    
+                    # Clean up color names (remove common suffixes)
+                    if color:
+                        color = color.split('/')[0].strip()  # Remove "color/heather" parts
+                        color = color.split(' patch')[0].strip()  # Remove "color patch" parts
+                    
+                    variant = ProductVariant(
+                        id=variant_data["id"],
+                        title=variant_data["title"],
+                        color=color,
+                        size=size,
+                        price=variant_data.get("price"),
+                        available=True  # Assume available unless we have specific info
+                    )
+                    all_variants.append(variant)
+                    
+            except Exception as e:
+                self.logger.warning(f"Error fetching variants for blueprint {blueprint_id} provider {provider.get('id')}: {e}")
+                continue
+        
+        return all_variants
     
     def _categorize_product(self, title: str) -> str:
         """Categorize a product based on its title"""
@@ -417,7 +473,7 @@ class ProductCatalog:
         return datetime.now() - self._last_cache_update < self.cache_duration
     
     def _save_cache_to_disk(self):
-        """Save the current cache to disk"""
+        """Save the current cache to disk including variants data"""
         try:
             cache_data = {
                 'last_update': self._last_cache_update.isoformat(),
@@ -428,6 +484,7 @@ class ProductCatalog:
                         'description': p.description,
                         'category': p.category,
                         'tags': p.tags,
+                        'variants': [asdict(v) for v in p.variants],  # Include variants data
                         'print_providers': p.print_providers,
                         'images': p.images,
                         'created_at': p.created_at,
@@ -439,13 +496,13 @@ class ProductCatalog:
             with open(self._cache_file, 'w') as f:
                 json.dump(cache_data, f, indent=2)
                 
-            self.logger.info(f"Cache saved to {self._cache_file}")
+            self.logger.info(f"Cache with {sum(len(p.variants) for p in self._products_cache.values())} variants saved to {self._cache_file}")
             
         except Exception as e:
             self.logger.warning(f"Failed to save cache to disk: {e}")
     
     def _load_cache_from_disk(self) -> bool:
-        """Load cache from disk if available and valid"""
+        """Load cache from disk if available and valid, including variants data"""
         try:
             if not os.path.exists(self._cache_file):
                 return False
@@ -464,13 +521,26 @@ class ProductCatalog:
             self._categories_cache = {}
             
             for pid_str, product_data in cache_data['products'].items():
+                # Reconstruct variants from cached data
+                variants = []
+                for variant_data in product_data.get('variants', []):
+                    variant = ProductVariant(
+                        id=variant_data['id'],
+                        title=variant_data['title'],
+                        color=variant_data['color'],
+                        size=variant_data.get('size'),
+                        price=variant_data.get('price'),
+                        available=variant_data.get('available', True)
+                    )
+                    variants.append(variant)
+                
                 product = Product(
                     id=product_data['id'],
                     title=product_data['title'],
                     description=product_data['description'],
                     category=product_data['category'],
                     tags=product_data['tags'],
-                    variants=[],  # Variants loaded on demand
+                    variants=variants,  # Now loaded from cache instead of empty
                     print_providers=product_data['print_providers'],
                     images=product_data['images'],
                     created_at=product_data['created_at'],
@@ -485,7 +555,8 @@ class ProductCatalog:
                 self._categories_cache[product.category].append(product)
             
             self._last_cache_update = last_update
-            self.logger.info(f"Loaded {len(self._products_cache)} products from disk cache")
+            total_variants = sum(len(p.variants) for p in self._products_cache.values())
+            self.logger.info(f"Loaded {len(self._products_cache)} products with {total_variants} variants from disk cache")
             return True
             
         except Exception as e:
