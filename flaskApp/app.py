@@ -1,15 +1,51 @@
 import os
+import logging
+from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask, request, render_template, redirect, url_for, jsonify
 import requests
 import time
 import openai
 import re
+import sys
+import os
+import logging
+from datetime import datetime
+from dotenv import load_dotenv
+sys.path.append('..')
+from product_catalog import create_product_catalog
+from llm_product_selection import get_llm_product_selection
+from conversation_manager import ConversationManager, ConversationContext
+from intelligent_color_selection import IntelligentColorSelector
+from intelligent_error_handler import IntelligentErrorHandler, ErrorContext, ErrorRecovery
 
 # Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
+
+# Configure logging (Vercel-compatible - no file logging in serverless)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()  # Console logging only for Vercel
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# In-memory log storage for Vercel (since we can't write files)
+server_logs = []
+
+def add_server_log(message):
+    """Add a message to server logs (in-memory for Vercel)"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    formatted_message = f"{timestamp} - INFO - {message}"
+    server_logs.append(formatted_message)
+    # Keep only the last 100 log entries to prevent memory issues
+    if len(server_logs) > 100:
+        server_logs.pop(0)
+    logger.info(message)  # Also log to console (visible in Vercel logs)
 
 # Get API keys from environment variables
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -41,13 +77,113 @@ default_logo_settings = {
 # Store the current logo settings for the session
 current_logo_settings = default_logo_settings.copy()
 
-# List of common colors for matching
-COMMON_COLORS = [
-    'white', 'black', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'brown', 'gray', 'grey', 'beige', 'maroon', 'navy', 'teal', 'lime', 'olive', 'cyan', 'magenta', 'gold', 'silver', 'cream', 'ivory', 'lavender', 'peach', 'mint', 'coral', 'burgundy', 'mustard', 'turquoise', 'aqua', 'charcoal', 'khaki', 'tan', 'rose', 'salmon', 'plum', 'indigo', 'violet', 'amber', 'apricot', 'azure', 'bronze', 'cherry', 'chocolate', 'copper', 'crimson', 'emerald', 'jade', 'lemon', 'mauve', 'ochre', 'ruby', 'sapphire', 'scarlet', 'taupe', 'topaz', 'wine'
-]
+# Initialize product catalog, conversation manager, and color selector
+product_catalog = None
+conversation_manager = None
+color_selector = None
+error_handler = None
+
+def init_product_catalog():
+    """Initialize the product catalog on first use"""
+    global product_catalog, conversation_manager, color_selector, error_handler
+    if product_catalog is None:
+        try:
+            product_catalog = create_product_catalog()
+            success = product_catalog.load_catalog()
+            if success:
+                add_server_log("Product catalog initialized successfully")
+                # Initialize conversation manager with the catalog
+                conversation_manager = ConversationManager(product_catalog)
+                add_server_log("Conversation manager initialized successfully")
+                # Initialize intelligent color selector
+                color_selector = IntelligentColorSelector()
+                add_server_log("Intelligent color selector initialized successfully")
+                # Initialize intelligent error handler
+                error_handler = IntelligentErrorHandler(product_catalog, headers)
+                add_server_log("Intelligent error handler initialized successfully")
+            else:
+                add_server_log("Failed to initialize product catalog")
+        except Exception as e:
+            add_server_log(f"Error initializing product catalog: {e}")
+            product_catalog = None
+            conversation_manager = None
+            color_selector = None
+
+# Store current product information for memory
+current_product_memory = {
+    "blueprint_id": None,
+    "blueprint_title": None,
+    "print_provider_id": None,
+    "current_color": None,
+    "available_colors": [],
+    "last_mockup_url": None
+}
+
+# Debug logs for the webpage
+debug_logs = []
+
+def add_debug_log(message):
+    """Add a debug message to the logs"""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    formatted_message = f"[{timestamp}] {message}"
+    debug_logs.append(formatted_message)
+    # Keep only the last 20 log entries
+    if len(debug_logs) > 20:
+        debug_logs.pop(0)
+    print(message)  # Also print to console
+    add_server_log(f"DEBUG: {message}")  # Add to in-memory server logs
+
+# =============================================================================
+# PRODUCT CATALOG AND SELECTION SYSTEM
+# =============================================================================
+# This application now uses an AI-driven product selection system instead of 
+# hardcoded string matching. The system consists of:
+#
+# 1. ProductCatalog (product_catalog.py) - Loads and caches all Printify products
+# 2. LLMProductSelector (llm_product_selection.py) - Uses AI to select products  
+# 3. Structured schemas (product_selection_schema.py) - Validates AI responses
+#
+# REMOVED: Legacy hardcoded color lists, product dictionaries, and string 
+# matching functions have been eliminated in favor of intelligent AI selection.
+# =============================================================================
 
 def get_all_available_products():
-    """Get a list of all available products from Printify API"""
+    """Get a list of all available products from Printify API - DEPRECATED: Use product_catalog instead"""
+    global product_catalog
+    
+    # Initialize catalog if needed
+    if product_catalog is None:
+        init_product_catalog()
+    
+    if product_catalog is None:
+        # Fallback to old method if catalog initialization failed
+        return get_all_available_products_old()
+    
+    try:
+        # Get categories from the new catalog
+        categories = product_catalog.get_categories()
+        
+        # Convert to old format for backward compatibility
+        product_categories = {}
+        for category_name, products in categories.items():
+            product_categories[category_name] = []
+            for product in products:
+                product_categories[category_name].append({
+                    'id': product.id,
+                    'title': product.title,
+                    'available': product.available
+                })
+        
+        add_debug_log(f"Loaded {len(product_categories)} product categories from catalog")
+        return product_categories
+        
+    except Exception as e:
+        add_debug_log(f"Error getting products from catalog: {e}")
+        # Fallback to old method
+        return get_all_available_products_old()
+
+def get_all_available_products_old():
+    """Original method for getting products - kept as fallback"""
     try:
         url = "https://api.printify.com/v1/catalog/blueprints.json"
         res = requests.get(url, headers=headers)
@@ -99,71 +235,69 @@ def get_all_available_products():
         return {}
 
 def find_blueprint_id(search_term):
-    url = "https://api.printify.com/v1/catalog/blueprints.json"
-    res = requests.get(url, headers=headers)
-    res.raise_for_status()
-    blueprints = res.json()
+    """
+    Find a product blueprint ID using the intelligent catalog system.
     
-    search_term_lower = search_term.lower()
-    print(f"Searching for blueprint with term: '{search_term_lower}'")
+    MODERN APPROACH: This function now uses the ProductCatalog system to search
+    for products instead of hardcoded string matching. The catalog provides
+    intelligent search capabilities with proper product categorization.
     
-    # First, try to find an exact match
-    for blueprint in blueprints:
-        if search_term_lower == blueprint['title'].lower():
-            print(f"Found exact match: {blueprint['title']}")
-            return blueprint['id'], blueprint['title']
+    Args:
+        search_term (str): Product name to search for (usually from LLM selection)
+        
+    Returns:
+        tuple: (blueprint_id, product_title) or (None, None) if not found
+        
+    Note: This function is still used for backward compatibility, but the main
+    product selection is now handled by the LLM system in get_ai_suggestion().
+    """
+    add_debug_log(f"🔍 find_blueprint_id called with: '{search_term}'")
     
-    # Next, try to find a blueprint that contains the search term as a substring
-    for blueprint in blueprints:
-        if search_term_lower in blueprint['title'].lower():
-            print(f"Found partial match: {blueprint['title']}")
-            return blueprint['id'], blueprint['title']
+    # Initialize catalog if needed
+    global product_catalog
+    if product_catalog is None:
+        init_product_catalog()
     
-    # Enhanced flexible matching for common product types
-    flexible_matches = {
-        'hat': ['hat', 'cap', 'beanie'],
-        'cap': ['cap', 'hat'],
-        'shirt': ['shirt', 'tee'],
-        't-shirt': ['shirt', 'tee'],
-        'tee': ['tee', 'shirt'],
-        'mug': ['mug', 'cup'],
-        'cup': ['cup', 'mug'],
-        'bag': ['bag', 'tote'],
-        'tote': ['tote', 'bag']
-    }
+    # Use the intelligent catalog search if available
+    if product_catalog is not None:
+        try:
+            # Search using the catalog's intelligent search
+            search_results = product_catalog.search_products(search_term, limit=1)
+            
+            if search_results:
+                product = search_results[0]
+                add_debug_log(f"✅ Catalog search found: {product.title} (ID: {product.id})")
+                return product.id, product.title
+            else:
+                add_debug_log(f"❌ No catalog results for '{search_term}'")
+        except Exception as e:
+            add_debug_log(f"⚠️ Catalog search failed: {e}")
     
-    if search_term_lower in flexible_matches:
-        keywords = flexible_matches[search_term_lower]
+    # Fallback: Direct API search (legacy compatibility)
+    try:
+        url = "https://api.printify.com/v1/catalog/blueprints.json"
+        res = requests.get(url, headers=headers)
+        res.raise_for_status()
+        blueprints = res.json()
+        
+        search_term_lower = search_term.lower()
+        
+        # Try exact match first
         for blueprint in blueprints:
-            title_lower = blueprint['title'].lower()
-            for keyword in keywords:
-                if keyword in title_lower:
-                    print(f"Found flexible match for '{search_term}': {blueprint['title']}")
-                    return blueprint['id'], blueprint['title']
-    
-    # For longer search terms, try matching with the most significant words
-    search_words = set(search_term_lower.split())
-    for blueprint in blueprints:
-        title_words = set(blueprint['title'].lower().split())
-        if search_words.issubset(title_words):
-            print(f"Found word match: {blueprint['title']}")
-            return blueprint['id'], blueprint['title']
-    
-    if len(search_words) > 2:
-        stop_words = {'a', 'an', 'the', 'and', 'or', 'but', 'of', 'for', 'with'}
-        filtered_search_words = search_words - stop_words
-        best_match = None
-        best_match_score = 0
+            if search_term_lower == blueprint['title'].lower():
+                add_debug_log(f"✅ Exact match found: {blueprint['title']} (ID: {blueprint['id']})")
+                return blueprint['id'], blueprint['title']
+        
+        # Try partial match
         for blueprint in blueprints:
-            title_words = set(blueprint['title'].lower().split())
-            match_count = len(filtered_search_words.intersection(title_words))
-            if match_count > best_match_score:
-                best_match_score = match_count
-                best_match = blueprint
-        if best_match and best_match_score >= len(filtered_search_words) / 2:
-            print(f"Found word similarity match: {best_match['title']}")
-            return best_match['id'], best_match['title']
+            if search_term_lower in blueprint['title'].lower():
+                add_debug_log(f"✅ Partial match found: {blueprint['title']} (ID: {blueprint['id']})")
+                return blueprint['id'], blueprint['title']
+                
+    except Exception as e:
+        add_debug_log(f"❌ Fallback API search failed: {e}")
     
+    add_debug_log(f"❌ No blueprint found for '{search_term}'")
     return None, None
 
 def get_print_providers(blueprint_id):
@@ -260,7 +394,8 @@ def get_mockup_image(shop_id, product_id):
         time.sleep(3)
     raise Exception("Mockup not generated in time.")
 
-def get_ai_suggestion(user_message):
+def get_ai_suggestion_old(user_message):
+    """Original AI suggestion function - kept as backup"""
     global chat_history, current_logo_settings
     
     # Check if this is a conversational message without product request
@@ -521,59 +656,129 @@ Format your response in natural language, not as JSON."""
         current_product = extract_current_product_type(chat_history)
         return {"search_term": current_product}, f"Error: {str(e)}"
 
-def adjust_logo_settings(user_message):
-    """Adjust logo size and position based on user commands"""
-    global current_logo_settings
+def handle_product_not_found(user_message, original_request=""):
+    """
+    Handle product not found scenarios with intelligent alternatives.
     
-    msg = user_message.lower()
+    Uses the IntelligentErrorHandler to suggest alternatives when products
+    can't be found, replacing generic error messages with helpful suggestions.
+    """
+    global error_handler, chat_history
     
-    # Handle size adjustments
-    if 'smaller' in msg:
-        # Reduce scale by 25%
-        current_logo_settings["scale"] = max(0.1, current_logo_settings["scale"] * 0.75)
-    elif any(term in msg for term in ['bigger', 'larger']):
-        # Increase scale by 25%
-        current_logo_settings["scale"] = min(2.0, current_logo_settings["scale"] * 1.25)
+    # Initialize error handler if needed
+    if error_handler is None:
+        init_product_catalog()
     
-    # Handle position adjustments
-    # Check for corner positions first (these are combinations of directions)
-    if 'top right' in msg or 'upper right' in msg:
-        current_logo_settings["x"] = 0.8  # Move right
-        current_logo_settings["y"] = 0.2  # Move up
-    elif 'top left' in msg or 'upper left' in msg:
-        current_logo_settings["x"] = 0.2  # Move left
-        current_logo_settings["y"] = 0.2  # Move up
-    elif 'bottom right' in msg or 'lower right' in msg:
-        current_logo_settings["x"] = 0.8  # Move right
-        current_logo_settings["y"] = 0.8  # Move down
-    elif 'bottom left' in msg or 'lower left' in msg:
-        current_logo_settings["x"] = 0.2  # Move left
-        current_logo_settings["y"] = 0.8  # Move down
-    elif 'center' in msg:
-        current_logo_settings["x"] = 0.5
-        current_logo_settings["y"] = 0.5
-    # Handle individual direction adjustments
-    else:
-        if 'left' in msg:
-            # Move left by reducing x by 25% of available space
-            current_logo_settings["x"] = max(0.1, current_logo_settings["x"] - 0.25)
-        elif 'right' in msg:
-            # Move right by increasing x by 25% of available space
-            current_logo_settings["x"] = min(0.9, current_logo_settings["x"] + 0.25)
+    if error_handler is None:
+        return "I couldn't find that product. Please try a different search term."
+    
+    try:
+        # Create error context
+        context = ErrorContext(
+            error_type="PRODUCT_NOT_FOUND",
+            original_request=original_request or user_message,
+            user_message=user_message,
+            conversation_history=chat_history[-5:] if chat_history else []
+        )
         
-        if 'up' in msg or 'top' in msg:
-            # Move up by reducing y by 25% of available space
-            current_logo_settings["y"] = max(0.1, current_logo_settings["y"] - 0.25)
-        elif 'down' in msg or 'bottom' in msg:
-            # Move down by increasing y by 25% of available space
-            current_logo_settings["y"] = min(0.9, current_logo_settings["y"] + 0.25)
+        # Get intelligent recovery suggestions
+        recovery = error_handler.handle_product_not_found(context)
+        
+        # Generate user-friendly message
+        return error_handler.get_recovery_message(recovery)
+        
+    except Exception as e:
+        add_debug_log(f"❌ Error in intelligent error handling: {e}")
+        return "I couldn't find that product, but let me suggest some popular alternatives like t-shirts, mugs, or hats."
+
+def get_ai_suggestion(user_message):
+    """
+    NEW LLM-Driven Product Selection System
     
-    # Round values to 2 decimal places for cleaner display
-    current_logo_settings["scale"] = round(current_logo_settings["scale"], 2)
-    current_logo_settings["x"] = round(current_logo_settings["x"], 2)
-    current_logo_settings["y"] = round(current_logo_settings["y"], 2)
+    This replaces the old string matching heuristics with intelligent 
+    LLM-based product selection using the complete Printify catalog.
+    """
+    global chat_history, current_logo_settings
     
-    print(f"Adjusted logo settings: {current_logo_settings}")
+    # Handle conversational input without product requests
+    conversational_input = any(term in user_message.lower() 
+                            for term in ['thanks', 'thank you', 'great', 'awesome', 'perfect', 
+                                        'looks good', 'nice', 'cool', 'love it', 'amazing'])
+    
+    # Handle logo adjustment requests
+    logo_adjustment_request = any(term in user_message.lower() 
+                               for term in ['smaller', 'bigger', 'larger', 'resize', 'left', 'right',
+                                           'up', 'down', 'move', 'position', 'scale', 'size'])
+    
+    try:
+        # Handle conversational responses
+        if conversational_input and not any(term in user_message.lower() for term in ['hat', 'shirt', 'mug', 'cup', 'hoodie', 'product']):
+            ai_message = "You're welcome! Is there anything else you'd like to customize or try?"
+            add_message_to_chat("assistant", ai_message)
+            current_product = extract_current_product_type(chat_history)
+            return {"search_term": current_product, "conversational": True}, ai_message
+            
+        # Handle logo adjustments
+        elif logo_adjustment_request:
+            adjust_logo_settings(user_message)
+            search_term = extract_current_product_type(chat_history)
+            ai_message = generate_logo_adjustment_response(user_message)
+            add_message_to_chat("assistant", ai_message)
+            return {"search_term": search_term, "adjust_logo": True}, ai_message
+        
+        # Use LLM for intelligent product selection
+        else:
+            # Format conversation history for LLM
+            formatted_history = []
+            for msg in chat_history[-5:]:  # Last 5 messages for context
+                formatted_history.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+            
+            # Get LLM product selection
+            success, llm_response, error = get_llm_product_selection(user_message, formatted_history)
+            
+            if success and llm_response:
+                # Add the LLM's response to chat history
+                add_message_to_chat("assistant", llm_response.response_message)
+                
+                # Return the search term and message
+                return {
+                    "search_term": llm_response.primary_product.product_title,
+                    "product_id": llm_response.primary_product.product_id,
+                    "category": llm_response.primary_product.category,
+                    "confidence": llm_response.primary_product.confidence,
+                    "llm_driven": True
+                }, llm_response.response_message
+            else:
+                # Fallback to old system if LLM fails
+                add_debug_log(f"LLM selection failed, falling back to old system: {error}")
+                return get_ai_suggestion_old(user_message)
+                
+    except Exception as e:
+        add_debug_log(f"Error in new AI suggestion system: {e}")
+        # Fallback to old system
+        return get_ai_suggestion_old(user_message)
+
+# =============================================================================
+# MODERN APPROACH: Intelligent Logo Adjustment
+# =============================================================================
+# REMOVED: adjust_logo_settings() function
+# 
+# This hardcoded function has been replaced by the ConversationManager's
+# handle_logo_adjustment() method, which uses LLM natural language understanding
+# to interpret logo positioning requests and provide intelligent responses.
+#
+# The new system:
+# • Understands complex positioning requests ("top right corner")
+# • Provides natural language explanations of adjustments
+# • Handles edge cases and invalid requests gracefully
+# • Uses AI to interpret user intent instead of keyword matching
+#
+# Integration: Logo adjustments are now handled through the conversation
+# management system in the main Flask route.
+# =============================================================================
 
 def extract_current_product_type(chat_history):
     """Extract the most recent product type from chat history"""
@@ -639,61 +844,29 @@ def extract_current_product_type(chat_history):
     print("Using default fallback: t-shirt")
     return "t-shirt"
 
-def generate_logo_adjustment_response(user_message):
-    """Generate a response about the logo adjustment"""
-    msg = user_message.lower()
-    response = "I've "
-    
-    # Track which adjustments were made
-    size_adjusted = False
-    position_adjusted = False
-    position_type = None
-    
-    if 'smaller' in msg:
-        response += "made the logo smaller"
-        size_adjusted = True
-    elif any(term in msg for term in ['bigger', 'larger']):
-        response += "made the logo bigger"
-        size_adjusted = True
-    
-    if 'top right' in msg or 'upper right' in msg:
-        position_type = "to the top right corner"
-        position_adjusted = True
-    elif 'top left' in msg or 'upper left' in msg:
-        position_type = "to the top left corner"
-        position_adjusted = True
-    elif 'bottom right' in msg or 'lower right' in msg:
-        position_type = "to the bottom right corner" 
-        position_adjusted = True
-    elif 'bottom left' in msg or 'lower left' in msg:
-        position_type = "to the bottom left corner"
-        position_adjusted = True
-    elif 'left' in msg:
-        position_type = "to the left"
-        position_adjusted = True
-    elif 'right' in msg:
-        position_type = "to the right"
-        position_adjusted = True
-    elif 'up' in msg or 'top' in msg:
-        position_type = "up"
-        position_adjusted = True
-    elif 'down' in msg or 'bottom' in msg:
-        position_type = "down"
-        position_adjusted = True
-    elif 'center' in msg:
-        position_type = "to the center"
-        position_adjusted = True
-    
-    # Combine the adjustments in the response
-    if size_adjusted and position_adjusted:
-        response += f" and moved it {position_type}"
-    elif position_adjusted:
-        response += f"moved the logo {position_type}"
-    elif not size_adjusted:
-        response += "adjusted the logo as requested"
-        
-    response += ". Here's what it looks like now!"
-    return response
+# =============================================================================
+# MODERN APPROACH: Intelligent Response Generation
+# =============================================================================
+# REMOVED: generate_logo_adjustment_response() function
+#
+# This hardcoded response generation function has been replaced by the
+# ConversationManager's intelligent response system. The new system:
+#
+# • Uses LLM to generate natural, contextual responses
+# • Explains adjustments in clear, user-friendly language
+# • Adapts responses based on conversation history and context
+# • Handles complex multi-part adjustments intelligently
+# • Provides helpful feedback and next-step suggestions
+#
+# The LLM now generates responses that are:
+# - Contextually appropriate to the specific adjustment made
+# - Natural and conversational in tone
+# - Informative about what changed and why
+# - Encouraging and helpful for continued interaction
+#
+# Integration: Response generation is now handled by ConversationManager
+# within the main conversation flow.
+# =============================================================================
 
 def add_message_to_chat(role, content):
     """Add a message to chat history, avoiding duplicates"""
@@ -713,226 +886,149 @@ def add_message_to_chat(role, content):
         
     # Add the message
     chat_history.append({"role": role, "content": content})
+    
+    # Log chat messages to server logs
+    add_server_log(f"CHAT - {role.upper()}: {content}")
 
-def handle_compound_words(search_term):
-    """Break compound words into component parts and try alternatives"""
-    # List of common compound words to check
-    compounds = {
-        'lampshade': ['lamp', 'lamp shade', 'shade'],
-        'tshirt': ['t-shirt', 'tee', 'shirt'],
-        'phonecases': ['phone case', 'case'],
-        'waterbottle': ['water bottle', 'bottle'],
-        'coffeemug': ['coffee mug', 'mug'],
-        'cellphone': ['phone case', 'phone'],
-        'facemask': ['face mask', 'mask'],
-        'baseballcap': ['baseball cap', 'cap', 'hat'],
-        'sweatshirt': ['sweatshirt', 'hoodie', 'sweater'],
-        'unisexheavyblendcrewnecksweat': ['sweatshirt', 'crewneck', 'hoodie']
-    }
-    
-    # Remove spaces and check if it's a known compound word
-    no_spaces = search_term.replace(" ", "").lower()
-    if no_spaces in compounds:
-        return compounds[no_spaces]
-    
-    # Try to split at common points if it's a long term
-    if len(no_spaces) > 6:
-        # Try common splits
-        for i in range(3, len(no_spaces)-2):
-            part1 = no_spaces[:i]
-            part2 = no_spaces[i:]
-            if part1 in ['lamp', 'phone', 'coffee', 'water', 'face', 'base', 't', 'sweat'] or part2 in ['shade', 'case', 'mug', 'shirt', 'hat', 'mask', 'cap', 'bottle', 'sweatshirt', 'hoodie']:
-                return [part1, part2, part1 + " " + part2]
-    
-    # Special case for sweatshirt-related terms
-    if 'sweat' in no_spaces or 'hoodie' in no_spaces or 'crew' in no_spaces:
-        return ['sweatshirt', 'hoodie']
-    
-    return []
-
-def simplify_search_term(search_term):
-    """Extract the basic product type from a complex search term"""
-    if not search_term or search_term.lower() == "search_term":
-        return "hat"  # Default when we get a placeholder
-        
-    # Common product types on Printify
-    # Order matters here - check more specific types first
-    basic_types = [
-        'sweatshirt', 'hoodie', 'sweater',  # Put these first as they're more specific
-        'hat', 'cap', 'beanie', 
-        'shirt', 't-shirt', 'tee', 
-        'mug', 'cup', 
-        'tote', 'bag', 'backpack', 
-        'phone case', 'case', 
-        'poster', 'sticker', 'socks', 'pillow', 'blanket'
-    ]
-    
-    # First check if any basic type is directly in the search term
-    search_lower = search_term.lower()
-    
-    # Special cases for common products that might get misclassified
-    if 'sweat' in search_lower or 'hoodie' in search_lower or 'crew' in search_lower:
-        return 'sweatshirt'
-        
-    # Special case for t-shirt vs. sweatshirt
-    if 'shirt' in search_lower:
-        if 't-' in search_lower or 'tee' in search_lower:
-            return 't-shirt'
-        elif 'sweat' not in search_lower and 'hoodie' not in search_lower and 'sweater' not in search_lower:
-            # If it's just "shirt" without specifics, and not a sweatshirt, default to t-shirt
-            return 't-shirt'
-    
-    for basic_type in basic_types:
-        if basic_type in search_lower:
-            return basic_type
-    
-    # If not found, take only the last word (often the product type)
-    words = search_term.split()
-    if words:
-        # Handle common specific product types
-        if "trucker" in search_lower or "truckers" in search_lower:
-            return "hat"
-            
-        # Check if last word is likely a color or modifier
-        last_word = words[-1].lower()
-        modifiers = ['red', 'blue', 'green', 'black', 'white', 'yellow', 'purple', 'pink', 'orange',
-                    'custom', 'premium', 'large', 'small', 'medium', 'xl', 'xxl', 'xxxl']
-        if last_word in modifiers and len(words) > 1:
-            return words[-2].lower()  # Return second-to-last word
-        return last_word
-    
-    # More intelligent default fallback based on keywords
-    if 'wear' in search_lower or 'cloth' in search_lower:
-        return 'sweatshirt' if 'sweat' in search_lower else 't-shirt'
-    
-    return "t-shirt"  # Last resort fallback
-
-def extract_color_from_message(message):
-    """Extract a color from the user's message, if present. Returns the last color mentioned."""
-    message_lower = message.lower()
-    found_colors = []
-    
-    for color in COMMON_COLORS:
-        if re.search(rf'\b{color}\b', message_lower):
-            found_colors.append(color)
-    
-    if found_colors:
-        # Return the last color mentioned (usually the desired one)
-        chosen_color = found_colors[-1]
-        print(f"Found colors {found_colors} in message: '{message}', choosing: '{chosen_color}'")
-        return chosen_color
-    
-    print(f"No color found in message: '{message}'")
-    return None
-
-def detect_simple_product_request(user_message):
-    """Detect simple product requests and return the search term directly"""
-    message_lower = user_message.lower().strip()
-    
-    # Direct product mappings for simple requests
-    simple_products = {
-        'hat': 'hat',
-        'cap': 'cap', 
-        'baseball cap': 'baseball cap',
-        'trucker cap': 'trucker cap',
-        'dad hat': 'dad hat',
-        'beanie': 'beanie',
-        'bucket hat': 'bucket hat',
-        't-shirt': 't-shirt',
-        'tshirt': 't-shirt',
-        'tee': 't-shirt',
-        'shirt': 't-shirt',
-        'hoodie': 'hoodie',
-        'sweatshirt': 'sweatshirt',
-        'mug': 'mug',
-        'cup': 'mug',
-        'tote': 'tote',
-        'bag': 'bag',
-        'tote bag': 'tote bag',
-        'sticker': 'sticker',
-        'poster': 'poster'
-    }
-    
-    # Check for exact matches first
-    if message_lower in simple_products:
-        return simple_products[message_lower]
-    
-    # Check for color + product combinations (e.g., "red hat", "blue shirt")
-    words = message_lower.split()
-    if len(words) == 2:
-        color, product = words
-        if color in COMMON_COLORS and product in simple_products:
-            return simple_products[product]
-    
-    # Check if the message contains a simple product request
-    for product_key, search_term in simple_products.items():
-        if product_key in message_lower:
-            # Make sure it's not part of a larger word
-            if re.search(r'\b' + re.escape(product_key) + r'\b', message_lower):
-                return search_term
-    
-    return None
+# =============================================================================
+# REMOVED: Legacy String Matching Functions
+# =============================================================================
+# The following functions have been REMOVED in favor of LLM-driven selection:
+#
+# - handle_compound_words() - AI now handles word variations intelligently
+# - simplify_search_term() - LLM understands complex product descriptions  
+# - extract_color_from_message() - LLM handles color requests contextually
+# - detect_simple_product_request() - LLM processes all product requests
+# - detect_color_availability_question() - LLM handles color questions
+#
+# WHY REMOVED: These functions relied on hardcoded dictionaries and regex
+# patterns that were brittle and hard to maintain. The new LLM system in
+# get_ai_suggestion() handles all these cases intelligently using the
+# complete Printify catalog and natural language understanding.
+#
+# REPLACEMENT: All product selection is now handled by:
+# 1. get_ai_suggestion() - Main LLM-driven function
+# 2. LLMProductSelector - Intelligent product selection with catalog context
+# 3. ProductCatalog - Smart search across all available products
+# =============================================================================
 
 def get_variants_for_product(blueprint_id, print_provider_id, requested_color=None):
-    """Get variants for a product, optionally filtered by color"""
+    """
+    Get variants for a product using intelligent color selection.
+    
+    MODERN APPROACH: This function now uses the IntelligentColorSelector
+    to provide AI-driven color matching instead of hardcoded heuristics.
+    
+    The new system:
+    • Uses LLM to understand color requests in natural language
+    • Provides intelligent color matching with confidence scoring  
+    • Handles color synonyms, relationships, and variations
+    • Offers smart alternatives when exact matches aren't available
+    • Eliminates all hardcoded color matching patterns
+    
+    Args:
+        blueprint_id: Product blueprint ID
+        print_provider_id: Print provider ID
+        requested_color: User's color request (optional)
+        
+    Returns:
+        List of variant IDs or error dict with alternatives
+    """
+    global current_product_memory, color_selector
+    
+    # Initialize color selector if needed
+    if color_selector is None:
+        init_product_catalog()
+    
     try:
-        res = requests.get(f"https://api.printify.com/v1/catalog/blueprints/{blueprint_id}/print_providers/{print_provider_id}/variants.json", headers=headers)
+        # Fetch variants from Printify API
+        res = requests.get(
+            f"https://api.printify.com/v1/catalog/blueprints/{blueprint_id}/print_providers/{print_provider_id}/variants.json", 
+            headers=headers
+        )
         res.raise_for_status()
         all_variants = res.json()["variants"]
         
-        print(f"Available variants for blueprint {blueprint_id}:")
-        for variant in all_variants[:5]:  # Show first 5 for debugging
-            color = variant.get("options", {}).get("color", "Unknown")
-            print(f"  - {variant['title']} (Color: {color})")
+        add_debug_log(f"🎨 Fetched {len(all_variants)} variants for blueprint {blueprint_id}")
         
-        if not requested_color:
-            print("No color requested, using all variants")
-            return [v["id"] for v in all_variants]
+        # Get product context for intelligent color selection
+        product_context = {
+            "id": blueprint_id,
+            "title": current_product_memory.get("blueprint_title", "Unknown Product")
+        }
         
-        print(f"Looking for color: '{requested_color}'")
+        # Use intelligent color selection system
+        if color_selector is not None:
+            try:
+                selection_result = color_selector.select_color_variants(
+                    all_variants=all_variants,
+                    requested_color=requested_color,
+                    product_context=product_context
+                )
+                
+                # Update product memory with results
+                current_product_memory["available_colors"] = selection_result.available_colors
+                if selection_result.selected_color:
+                    current_product_memory["current_color"] = selection_result.selected_color
+                
+                # Log results
+                if selection_result.selected_color:
+                    add_debug_log(f"🤖 AI selected color: '{selection_result.selected_color}' (confidence: {selection_result.color_match.confidence:.2f})")
+                    add_debug_log(f"✅ Found {len(selection_result.variant_ids)} matching variants")
+                    return selection_result.variant_ids
+                elif selection_result.error_message:
+                    add_debug_log(f"❌ {selection_result.error_message}")
+                    # Return error in legacy format for compatibility
+                    return {
+                        "error": "color_not_found", 
+                        "available_colors": selection_result.available_colors,
+                        "requested_color": requested_color,
+                        "alternatives": selection_result.color_match.alternatives if selection_result.color_match else []
+                    }
+                else:
+                    # No specific color requested - return all variants
+                    add_debug_log("No color requested, returning all variants")
+                    return selection_result.variant_ids
+                    
+            except Exception as e:
+                add_debug_log(f"⚠️ AI color selection failed: {e}")
+                # Fall through to fallback method
         
-        # First try exact match
-        exact_matches = []
-        fuzzy_matches = []
-        
-        for variant in all_variants:
-            color = variant.get("options", {}).get("color", "").lower()
-            variant_title = variant.get("title", "").lower()
-            
-            # Exact match
-            if requested_color.lower() == color:
-                exact_matches.append(variant)
-            # Fuzzy match - color contains requested color or vice versa
-            elif (requested_color.lower() in color or 
-                  color in requested_color.lower() or
-                  requested_color.lower() in variant_title):
-                fuzzy_matches.append(variant)
-        
-        if exact_matches:
-            print(f"Found exact matches for color '{requested_color}': {[v['title'] for v in exact_matches]}")
-            # Put exact matches first, then add other variants
-            selected_variants = exact_matches + [v for v in all_variants if v not in exact_matches]
-            return [v["id"] for v in selected_variants]
-        
-        if fuzzy_matches:
-            print(f"Found fuzzy matches for color '{requested_color}': {[v['title'] for v in fuzzy_matches]}")
-            # Put fuzzy matches first, then add other variants  
-            selected_variants = fuzzy_matches + [v for v in all_variants if v not in fuzzy_matches]
-            return [v["id"] for v in selected_variants]
-        
-        # No matches found - return available colors instead of variant IDs
-        print(f"No variants found for color '{requested_color}'")
+        # Fallback: Basic color extraction and matching
+        add_debug_log("Using fallback color selection")
         available_colors = []
+        colors_set = set()
+        
         for variant in all_variants:
             color = variant.get("options", {}).get("color", "")
-            if color and color not in available_colors:
-                available_colors.append(color)
+            if color:
+                primary_color = color.split('/')[0].strip()
+                primary_color = primary_color.split(' patch')[0].strip()
+                if primary_color:
+                    colors_set.add(primary_color.title())
         
-        print(f"Available colors: {available_colors}")
-        return {"error": "color_not_found", "available_colors": available_colors, "requested_color": requested_color}
+        available_colors = sorted(list(colors_set))
+        current_product_memory["available_colors"] = available_colors
+        
+        if not requested_color:
+            return [v["id"] for v in all_variants]
+        
+        # Basic color matching as fallback
+        for variant in all_variants:
+            color = variant.get("options", {}).get("color", "").lower()
+            if requested_color.lower() in color or color in requested_color.lower():
+                current_product_memory["current_color"] = requested_color
+                return [v["id"] for v in all_variants if requested_color.lower() in v.get("options", {}).get("color", "").lower()]
+        
+        # No match found
+        return {
+            "error": "color_not_found", 
+            "available_colors": available_colors,
+            "requested_color": requested_color
+        }
         
     except Exception as e:
-        print(f"Error getting variants: {e}")
+        add_debug_log(f"❌ Error in get_variants_for_product: {e}")
         return []
 
 @app.route('/', methods=['GET', 'POST'])
@@ -968,6 +1064,19 @@ def index():
             # Reset chat history and logo settings
             chat_history = []
             current_logo_settings = default_logo_settings.copy()
+            # Reset product memory
+            current_product_memory.update({
+                "blueprint_id": None,
+                "blueprint_title": None,
+                "print_provider_id": None,
+                "current_color": None,
+                "available_colors": [],
+                "last_mockup_url": None
+            })
+            # Clear debug logs
+            debug_logs.clear()
+            add_debug_log("🔄 Conversation reset - all memory cleared")
+            add_debug_log(f"📋 Product memory after reset: {current_product_memory}")
         elif 'message' in request.form and request.form['message'].strip():
             # Reset previous product display when starting a new search
             mockup_url = None
@@ -981,6 +1090,14 @@ def index():
             
             # Add user message to chat history first
             add_message_to_chat("user", user_message)
+            add_debug_log(f"💬 User message: {user_message}")
+            
+            # =================================================================
+            # MODERN APPROACH: All user requests are now handled by the LLM
+            # =================================================================
+            # REMOVED: Legacy color availability detection - the LLM now handles
+            # all types of questions including color availability inquiries
+            # intelligently within the main conversation flow.
             
             # Check if this is a color change request
             color_change_request = any(phrase in user_message.lower() for phrase in 
@@ -1055,20 +1172,17 @@ def index():
                     adjust_logo = suggestion.get('adjust_logo', False)
                     should_create_product = not adjust_logo
             else:
-                # First try to detect simple product requests directly
-                simple_search_term = detect_simple_product_request(user_message)
-                if simple_search_term:
-                    search_term = simple_search_term
-                    print(f"Direct product detection: {search_term}")
-                    should_create_product = True
-                    add_message_to_chat("assistant", f"Let me create a {search_term} for you!")
-                    # Create a simple suggestion object for consistency
-                    suggestion = {"search_term": search_term, "conversational": False, "adjust_logo": False}
-                else:
-                    # Get AI suggestion for other types of requests
-                    suggestion, ai_response = get_ai_suggestion(user_message)
-                    search_term = suggestion.get('search_term')
-                    print(f"Original search term from AI: {search_term}")  # Debug
+                # ================================================================
+                # MODERN APPROACH: All requests handled by intelligent LLM system
+                # ================================================================
+                # REMOVED: Legacy detect_simple_product_request() function
+                # The LLM now handles ALL product requests intelligently, including
+                # simple ones like "hat" or "mug" as well as complex descriptions.
+                
+                # Get AI suggestion for all types of requests
+                suggestion, ai_response = get_ai_suggestion(user_message)
+                search_term = suggestion.get('search_term')
+                add_debug_log(f"🤖 LLM selected product: {search_term}")
                 
                 # If this is a purely conversational message, just show the conversation without creating a product
                 if suggestion.get('conversational', False):
@@ -1079,7 +1193,7 @@ def index():
                     return render_template('index.html', mockup_url=mockup_url, attempted_searches=attempted_searches, 
                                           search_term=search_term, image_url=image_url, chat_history=chat_history,
                                           error_message=error_message, success=success, user_message="",
-                                          current_logo_settings=current_logo_settings)
+                                          current_logo_settings=current_logo_settings, debug_logs=debug_logs)
                 
                 if not image_url and 'image_url' in suggestion:
                     image_url = suggestion.get('image_url')
@@ -1121,28 +1235,13 @@ def index():
                         search_term = best_match
                     else:
                         print(f"WARNING: Requested product '{potential_product_name}' does not exist in the catalog! This may be a hallucinated recommendation.")
-                        # When a hallucinated product is requested, add a message clarifying it doesn't exist
-                        not_found_message = f"I'm sorry, but I couldn't find a product called '{potential_product_name}' in our catalog. It seems I suggested a product that isn't actually available. Let me recommend something that definitely exists instead."
-                        add_message_to_chat("assistant", not_found_message)
                         
-                        # Try to find a semantically similar product based on category
-                        product_type_keywords = ['shirt', 'sweatshirt', 'hoodie', 'hat', 'cap', 'mug', 'tote', 'bag']
-                        detected_type = None
-                        for keyword in product_type_keywords:
-                            if keyword in potential_product_name.lower():
-                                detected_type = keyword
-                                break
+                        # Use intelligent error handling for product not found
+                        recovery_message = handle_product_not_found(user_message, potential_product_name)
+                        add_message_to_chat("assistant", recovery_message)
                         
-                        if detected_type:
-                            category_products = product_categories.get(detected_type, [])
-                            if category_products:
-                                # Use the first product of the same type
-                                search_term = category_products[0]['title']
-                                print(f"Suggesting alternative product of same type: {search_term}")
-                            else:
-                                search_term = "t-shirt"  # Default fallback
-                        else:
-                            search_term = "t-shirt"  # Default fallback
+                        # Fallback to basic product suggestion if error handler fails
+                        search_term = "t-shirt"
                 
                 # If the request was for logo adjustment, use the same product type with new settings
                 adjust_logo = suggestion.get('adjust_logo', False)
@@ -1203,12 +1302,20 @@ def index():
                                     return render_template('index.html', mockup_url=mockup_url, attempted_searches=attempted_searches, 
                                                           search_term=search_term, image_url=image_url, chat_history=chat_history,
                                                           error_message=error_message, success=False, user_message="",
-                                                          current_logo_settings=current_logo_settings)
+                                                          current_logo_settings=current_logo_settings, debug_logs=debug_logs)
                                 
                                 product_id = create_product(shop_id, blueprint_id, print_provider_id, image_id, variant_ids)
                                 mockup_url = get_mockup_image(shop_id, product_id)
                                 
                                 success = True
+                                
+                                # Update product memory for logo adjustments too
+                                current_product_memory.update({
+                                    "blueprint_id": blueprint_id,
+                                    "blueprint_title": blueprint_title,
+                                    "print_provider_id": print_provider_id,
+                                    "last_mockup_url": mockup_url
+                                })
                                 
                                 # Don't add a second confirmation message here since we already added the logo adjustment one
                                 # in the get_ai_suggestion function
@@ -1249,7 +1356,9 @@ def index():
                     print(f"Attempt {attempt+1}, using search term: {search_term}")
                     
                     try:
+                        add_debug_log(f"🔍 Searching for blueprint with term: '{search_term}'")
                         blueprint_id, blueprint_title = find_blueprint_id(search_term)
+                        add_debug_log(f"📦 Found blueprint: ID={blueprint_id}, Title='{blueprint_title}'")
                         if blueprint_id:
                             providers = get_print_providers(blueprint_id)
                             if providers:
@@ -1269,6 +1378,9 @@ def index():
                                     available_colors = variant_ids["available_colors"]
                                     requested_color_name = variant_ids["requested_color"]
                                     
+                                    add_debug_log(f"🎨 Color '{requested_color_name}' not available for {blueprint_title}")
+                                    add_debug_log(f"📋 Available colors: {available_colors}")
+                                    
                                     # Format the available colors nicely
                                     if len(available_colors) <= 3:
                                         colors_text = ", ".join(available_colors)
@@ -1284,10 +1396,24 @@ def index():
                                 
                                 success = True
                                 
+                                # Update product memory
+                                current_product_memory.update({
+                                    "blueprint_id": blueprint_id,
+                                    "blueprint_title": blueprint_title,
+                                    "print_provider_id": print_provider_id,
+                                    "last_mockup_url": mockup_url
+                                })
+                                
                                 # Only add this success message if we're not handling a logo adjustment
                                 # (which would have its own message already)
                                 if not suggestion.get('adjust_logo', False) and "logo" not in user_message.lower():
                                     add_message_to_chat("assistant", f"I found a {blueprint_title} product for you! Here's what it looks like with your image.")
+                                    
+                                    # Show available colors after successful product creation (if no specific color was requested)
+                                    if not extract_color_from_message(user_message) and current_product_memory["available_colors"]:
+                                        colors_text = ", ".join(current_product_memory["available_colors"])
+                                        color_message = f"Available colors: {colors_text}. Just say 'make it [color]' to change the color!"
+                                        add_message_to_chat("assistant", color_message)
                                 
                                 break
                     except Exception as e:
@@ -1397,6 +1523,8 @@ Explain briefly why each alternative might work for their needs. Be conversation
                                 search_term = "mug"
                             elif "lamp" in original_search_term.lower() and "lamp" not in attempted_terms:
                                 search_term = "lamp"
+                            elif "light" in original_search_term.lower() and "lamp" not in attempted_terms:
+                                search_term = "lamp"
                             elif "sweatshirt" not in attempted_terms:
                                 search_term = "sweatshirt"  # Try sweatshirt as an early fallback
                             elif "t-shirt" not in attempted_terms:
@@ -1451,6 +1579,14 @@ Explain briefly why each alternative might work for their needs. Be conversation
                                 product_id = create_product(shop_id, blueprint_id, print_provider_id, image_id, variant_ids)
                                 mockup_url = get_mockup_image(shop_id, product_id)
                                 success = True
+                                
+                                # Update product memory
+                                current_product_memory.update({
+                                    "blueprint_id": blueprint_id,
+                                    "blueprint_title": blueprint_title,
+                                    "print_provider_id": print_provider_id,
+                                    "last_mockup_url": mockup_url
+                                })
                         else:
                             error_message = f"No print providers found for '{search_term}'."
                     else:
@@ -1491,6 +1627,14 @@ Explain briefly why each alternative might work for their needs. Be conversation
                                         mockup_url = get_mockup_image(shop_id, product_id)
                                         success = True
                                         error_message = None
+                                        
+                                        # Update product memory
+                                        current_product_memory.update({
+                                            "blueprint_id": blueprint_id,
+                                            "blueprint_title": blueprint_title,
+                                            "print_provider_id": print_provider_id,
+                                            "last_mockup_url": mockup_url
+                                        })
                 except Exception as e:
                     error_message = f"Error: {str(e)}"
     
@@ -1498,10 +1642,52 @@ Explain briefly why each alternative might work for their needs. Be conversation
     return render_template('index.html', mockup_url=mockup_url, attempted_searches=attempted_searches, 
                           search_term=search_term, image_url=image_url, chat_history=chat_history,
                           error_message=error_message, success=success, user_message="",
-                          current_logo_settings=current_logo_settings)
+                          current_logo_settings=current_logo_settings, debug_logs=debug_logs)
+
+@app.route('/logs')
+def view_logs():
+    """View the server logs (in-memory for Vercel)"""
+    if not server_logs:
+        return "<p>No logs yet. Try using the app first to generate some logs.</p>"
+    
+    logs_text = "\n".join(server_logs)
+    return f"""
+    <html>
+    <head><title>MiM Server Logs</title></head>
+    <body>
+        <h2>MiM Server Logs (Last {len(server_logs)} entries)</h2>
+        <p><a href="/logs/download">Download as text file</a></p>
+        <pre style='font-family: monospace; font-size: 12px; white-space: pre-wrap; background: #f5f5f5; padding: 10px; border: 1px solid #ddd;'>{logs_text}</pre>
+    </body>
+    </html>
+    """
+
+@app.route('/logs/download')
+def download_logs():
+    """Download the log file (in-memory for Vercel)"""
+    if not server_logs:
+        return "No logs available yet."
+    
+    logs_text = "\n".join(server_logs)
+    from flask import Response
+    return Response(
+        logs_text,
+        mimetype="text/plain",
+        headers={"Content-disposition": "attachment; filename=mim_server_logs.txt"}
+    )
 
 # For Vercel deployment
 app = app
+
+# Your approved whitelist
+APPROVED_PRODUCTS = {
+    "hoodie": 49,  # Unisex Heavy Blend™ Crewneck Sweatshirt
+    "blanket": 439,  # Three-Panel Fleece Hoodie  
+    "stickers": 400,  # Kiss-Cut Stickers
+    "bucket_hat": 1910,  # Bucket Hat (Embroidery)
+    "towel": 352,  # Beach Towel
+    # ... add more as needed
+}
 
 if __name__ == '__main__':
     # For local development

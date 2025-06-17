@@ -47,6 +47,25 @@
                         <input type="hidden" name="reset" value="true">
                         <button type="submit" class="btn btn-outline-secondary btn-sm">Reset Conversation</button>
                     </form>
+                    
+                    <!-- Debug Logs Section -->
+                    {% if debug_logs %}
+                    <div class="mt-3">
+                        <button class="btn btn-outline-info btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#debugLogs" aria-expanded="false" aria-controls="debugLogs">
+                            <i class="fas fa-bug"></i> Debug Logs ({{ debug_logs|length }})
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm ms-2" type="button" onclick="copyDebugLogs()">
+                            <i class="fas fa-copy"></i> Copy All
+                        </button>
+                        <div class="collapse mt-2" id="debugLogs">
+                            <div class="card card-body debug-logs" id="debugLogsContent">
+                                {% for log in debug_logs %}
+                                    <div class="debug-log-entry">{{ log }}</div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
                 </div>
             </div>
             
@@ -196,6 +215,112 @@
                     }, 100);
                 }
             });
+            
+            // Copy debug logs function
+            window.copyDebugLogs = function() {
+                // Get chat messages first
+                let fullText = '=== CHAT TRANSCRIPT ===\n';
+                const chatMessages = document.querySelectorAll('.message');
+                chatMessages.forEach(message => {
+                    const role = message.classList.contains('user') ? 'USER' : 'ASSISTANT';
+                    const content = message.querySelector('.message-content').textContent;
+                    fullText += `${role}: ${content}\n`;
+                });
+                
+                // Add debug logs
+                fullText += '\n=== DEBUG LOGS ===\n';
+                const logEntries = document.querySelectorAll('.debug-log-entry');
+                logEntries.forEach(entry => {
+                    fullText += entry.textContent + '\n';
+                });
+                
+                // Try modern clipboard API first, fallback to older method
+                if (navigator.clipboard && window.isSecureContext) {
+                    navigator.clipboard.writeText(fullText).then(function() {
+                        showCopySuccess();
+                    }).catch(function(err) {
+                        console.error('Clipboard API failed: ', err);
+                        fallbackCopy(fullText);
+                    });
+                } else {
+                    fallbackCopy(fullText);
+                }
+            };
+            
+            function showCopySuccess() {
+                const button = event.target.closest('button');
+                const originalText = button.innerHTML;
+                button.innerHTML = '<i class="fas fa-check"></i> Copied!';
+                button.classList.remove('btn-outline-secondary');
+                button.classList.add('btn-success');
+                
+                setTimeout(() => {
+                    button.innerHTML = originalText;
+                    button.classList.remove('btn-success');
+                    button.classList.add('btn-outline-secondary');
+                }, 2000);
+            }
+            
+            function fallbackCopy(text) {
+                // Create a temporary textarea
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                textArea.style.position = 'fixed';
+                textArea.style.left = '-999999px';
+                textArea.style.top = '-999999px';
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                
+                try {
+                    document.execCommand('copy');
+                    showCopySuccess();
+                } catch (err) {
+                    console.error('Fallback copy failed: ', err);
+                    // Show the text in a modal for manual copying
+                    showCopyModal(text);
+                } finally {
+                    document.body.removeChild(textArea);
+                }
+            }
+            
+            function showCopyModal(text) {
+                // Create a modal with the text for manual copying
+                const modal = document.createElement('div');
+                modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; display: flex; align-items: center; justify-content: center;';
+                
+                const content = document.createElement('div');
+                content.style.cssText = 'background: white; padding: 20px; border-radius: 8px; max-width: 80%; max-height: 80%; overflow: auto;';
+                
+                content.innerHTML = `
+                    <h4>Copy Logs Manually</h4>
+                    <p>Please select all text below and copy it:</p>
+                    <textarea readonly style="width: 100%; height: 300px; font-family: monospace; font-size: 12px;">${text}</textarea>
+                    <br><br>
+                    <button id="closeModalBtn" class="btn btn-primary">Close</button>
+                `;
+                
+                modal.appendChild(content);
+                document.body.appendChild(modal);
+                
+                // Add close button functionality
+                const closeBtn = content.querySelector('#closeModalBtn');
+                closeBtn.addEventListener('click', function() {
+                    document.body.removeChild(modal);
+                });
+                
+                // Also close on modal background click
+                modal.addEventListener('click', function(e) {
+                    if (e.target === modal) {
+                        document.body.removeChild(modal);
+                    }
+                });
+                
+                // Auto-select the text
+                const textarea = content.querySelector('textarea');
+                textarea.focus();
+                textarea.select();
+            }
             
             // Copy image URL from main form to chat form
             var mainImageUrl = document.getElementById('image_url');

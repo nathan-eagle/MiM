@@ -171,3 +171,28 @@ h3 {
     background-color: #f1f3f5;
     border-bottom: 1px solid #ddd;
 }
+
+/* Debug logs styling */
+.debug-logs {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    max-height: 400px;
+    overflow-y: auto;
+    overflow-x: auto;
+    border: 1px solid #333;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.debug-log-entry {
+    padding: 2px 0;
+    border-bottom: 1px solid #333;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.debug-log-entry:last-child {
+    border-bottom: none;
+}
