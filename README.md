@@ -126,4 +126,4 @@ MIT License - see LICENSE file for details
 
 For issues or questions:
 - Open an issue on GitHub
-- Check the logs in Vercel dashboard for debugging 
+- Check the logs in Vercel dashboard for debugging # Force deployment
