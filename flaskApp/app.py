@@ -1093,6 +1093,9 @@ def index():
     success = False
     user_message = ""
     
+    # Global flag to prevent duplicate processing
+    processing_request = False
+    
     if request.method == 'POST':
         # Check if logo positioning controls were included in the form submission
         if 'logo_scale' in request.form:
@@ -1158,7 +1161,11 @@ def index():
                                           ["make it a", "change to", "switch to", "i want a", 
                                            "show me a", "get me a", "now make it a", "can i see a",
                                            "i want the", "i prefer the", "no - i want", "no! i want",
-                                           "let's see the", "actually, i prefer", "zip up", "full zip"])
+                                           "let's see the", "actually, i prefer", "zip up", "full zip",
+                                           "let's try a", "let's try the", "how about a", "how about the",
+                                           "that isn't a", "that's not a", "try a different", "instead"]) or (
+                                          "try" in user_message.lower() and any(prod in user_message.lower() for prod in 
+                                          ["hat", "cap", "hoodie", "shirt", "mug", "bag", "tote"]))
             
             add_debug_log(f"🔍 Request analysis - Color change: {color_change_request}, Product change: {product_type_change_request}")
             
@@ -1173,6 +1180,7 @@ def index():
             # Initialize processing flags
             color_change_handled = False
             product_change_handled = False
+            llm_processing_handled = False
             should_create_product = False
             
             # If this is a color change request, keep the same product but change color
@@ -1257,9 +1265,15 @@ def index():
                         error_message = f"Sorry, I couldn't find that product. Would you like to try a different product?"
                         add_message_to_chat("assistant", error_message)
                         
-                except Exception as e:
-                    error_message = f"Error processing color change: {str(e)}"
-                    add_message_to_chat("assistant", error_message)
+                                    except Exception as e:
+                        error_message = f"Error processing color change: {str(e)}"
+                        add_message_to_chat("assistant", error_message)
+                        
+                # Return immediately after color change processing
+                return render_template('index.html', mockup_url=mockup_url, attempted_searches=attempted_searches, 
+                                      search_term=search_term, image_url=image_url, chat_history=chat_history,
+                                      error_message=error_message, success=success, user_message="",
+                                      current_logo_settings=current_logo_settings, debug_logs=debug_logs)
             # If this is a product type change, extract the new product type directly
             elif product_type_change_request:
                 # Get what product they want to change to
@@ -1268,8 +1282,16 @@ def index():
                 # Handle specific product requests with more intelligent extraction
                 user_lower = user_message.lower()
                 
-                # Handle "zip up hoodie" specifically
-                if "zip up hoodie" in user_lower or "zip-up hoodie" in user_lower or "full zip hoodie" in user_lower:
+                # Handle specific product names first
+                if "vintage washed baseball cap" in user_lower:
+                    search_term = "vintage washed baseball cap"
+                elif "vintage bucket hat" in user_lower or "bucket hat" in user_lower:
+                    search_term = "bucket hat"
+                elif "dad hat" in user_lower:
+                    search_term = "dad hat"
+                elif "trucker cap" in user_lower or "trucker hat" in user_lower:
+                    search_term = "trucker cap"
+                elif "zip up hoodie" in user_lower or "zip-up hoodie" in user_lower or "full zip hoodie" in user_lower:
                     search_term = "Unisex Full Zip Hoodie"
                 elif "pullover hoodie" in user_lower:
                     search_term = "pullover hoodie"
@@ -1356,6 +1378,12 @@ def index():
                     except Exception as e:
                         error_message = f"Error processing product change: {str(e)}"
                         add_message_to_chat("assistant", error_message)
+                        
+                # Return immediately after product change processing
+                return render_template('index.html', mockup_url=mockup_url, attempted_searches=attempted_searches, 
+                                      search_term=search_term, image_url=image_url, chat_history=chat_history,
+                                      error_message=error_message, success=success, user_message="",
+                                      current_logo_settings=current_logo_settings, debug_logs=debug_logs)
                 else:
                     # If no specific product type found in the request, use AI suggestion
                     suggestion, ai_response = get_ai_suggestion(user_message)
