@@ -105,7 +105,7 @@ class ConversationManager:
             product_catalog: ProductCatalog instance for product context
         """
         self.product_catalog = product_catalog
-        self.product_selector = LLMProductSelector(product_catalog)
+        self.product_selector = LLMProductSelector()
         
         # Initialize OpenAI client
         openai.api_key = os.getenv('OPENAI_API_KEY')
