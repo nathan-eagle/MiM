@@ -50,18 +50,20 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, asdict
 from dotenv import load_dotenv
 import pickle
-import numpy as np
 
 # Load environment variables
 load_dotenv()
 
-# Optional import for embeddings - gracefully handle if not available
+# Optional imports for embeddings - gracefully handle if not available
 try:
     from sentence_transformers import SentenceTransformer
+    import numpy as np
+    from numpy.linalg import norm
     EMBEDDINGS_AVAILABLE = True
 except ImportError:
     EMBEDDINGS_AVAILABLE = False
     SentenceTransformer = None
+    np = None
 
 @dataclass
 class ProductVariant:
@@ -586,10 +588,7 @@ class ProductCatalog:
                 self.logger.warning("No products have embeddings - falling back to text search")
                 return self.search_products(query, limit)
             
-            # Calculate similarity scores
-            from numpy.linalg import norm
-            import numpy as np
-            
+            # Calculate similarity scores (numpy imported at top)
             similarities = []
             for product in products_with_embeddings:
                 product_embedding = np.array(product.embedding)
