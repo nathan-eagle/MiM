@@ -106,8 +106,8 @@ class LLMProductSelector:
         if not self.api_key:
             raise ValueError("OpenAI API key required")
         
-        # Initialize OpenAI client
-        self.client = openai.OpenAI(api_key=self.api_key)
+        # Initialize OpenAI client (old pattern for compatibility)
+        openai.api_key = self.api_key
         
         # Initialize product catalog
         self.catalog = create_product_catalog()
@@ -152,7 +152,7 @@ class LLMProductSelector:
             messages.append({"role": "user", "content": user_message})
             
             # Get LLM response
-            response = self.client.chat.completions.create(
+            response = openai.chat.completions.create(
                 model="gpt-4o-mini",  # Use GPT-4 for better reasoning
                 messages=messages,
                 temperature=0.3,  # Lower temperature for more consistent responses

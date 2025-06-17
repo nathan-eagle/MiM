@@ -112,11 +112,11 @@ class IntelligentErrorHandler:
         self.product_catalog = product_catalog
         self.printify_headers = printify_headers or {}
         
-        # Initialize OpenAI client
+        # Initialize OpenAI client (old pattern for compatibility)
         api_key = os.getenv('OPENAI_API_KEY')
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
-        self.client = openai.OpenAI(api_key=api_key)
+        openai.api_key = api_key
         
         # Cache for availability checking
         self.availability_cache = {}
@@ -167,7 +167,7 @@ Provide response as JSON:
 }}
 """
 
-            response = self.client.chat.completions.create(
+            response = openai.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are an expert product recommendation assistant. Analyze user requests and suggest the best alternative products when exact matches aren't found."},
@@ -256,7 +256,7 @@ Provide response as JSON:
 }}
 """
 
-            response = self.client.chat.completions.create(
+            response = openai.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are a color matching expert. Help users find the best available color alternatives when their preferred color isn't available."},
@@ -414,7 +414,7 @@ Provide response as JSON:
 }}
 """
 
-            response = self.client.chat.completions.create(
+            response = openai.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are a helpful error recovery assistant. When technical issues occur, guide users to working alternatives."},
