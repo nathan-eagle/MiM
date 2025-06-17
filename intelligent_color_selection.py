@@ -99,10 +99,9 @@ class IntelligentColorSelector:
     def __init__(self):
         """Initialize the intelligent color selector."""
         # Initialize OpenAI client
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
+        openai.api_key = os.getenv('OPENAI_API_KEY')
+        if not openai.api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
-        self.client = openai.OpenAI(api_key=api_key)
     
     def select_color_variants(
         self,

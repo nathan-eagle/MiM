@@ -108,10 +108,9 @@ class ConversationManager:
         self.product_selector = LLMProductSelector(product_catalog)
         
         # Initialize OpenAI client
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
+        openai.api_key = os.getenv('OPENAI_API_KEY')
+        if not openai.api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
-        self.client = openai.OpenAI(api_key=api_key)
     
     def manage_conversation(
         self, 
@@ -143,7 +142,7 @@ class ConversationManager:
             conversation_prompt = self._build_conversation_prompt(user_message, context)
             
             # Get LLM decision on conversation flow
-            response = self.client.chat.completions.create(
+            response = openai.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": self._get_conversation_system_prompt()},
@@ -395,7 +394,7 @@ Rules:
 - Center: (0.5, 0.5)
 """
 
-            response = self.client.chat.completions.create(
+            response = openai.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are a logo positioning assistant. Parse user requests and provide precise positioning coordinates."},
@@ -492,7 +491,7 @@ Provide 2-3 intelligent product recommendations with reasoning:
 }}
 """
 
-            response = self.client.chat.completions.create(
+            response = openai.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are a merchandise recommendation expert. Suggest products that match user needs with clear reasoning."},

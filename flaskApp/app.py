@@ -54,23 +54,8 @@ PRINTIFY_API_TOKEN = os.getenv('PRINTIFY_API_TOKEN')
 if not OPENAI_API_KEY or not PRINTIFY_API_TOKEN:
     raise ValueError("Missing required environment variables: OPENAI_API_KEY and/or PRINTIFY_API_TOKEN")
 
-# Configure OpenAI - explicitly control parameters for Vercel compatibility
-try:
-    openai_client = openai.OpenAI(
-        api_key=OPENAI_API_KEY,
-        timeout=30.0  # Explicit timeout for serverless
-    )
-    add_server_log("OpenAI client initialized successfully")
-except Exception as e:
-    add_server_log(f"Error initializing OpenAI client: {e}")
-    # Fallback: try with minimal parameters
-    try:
-        import openai
-        openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
-        add_server_log("OpenAI client initialized with fallback method")
-    except Exception as e2:
-        add_server_log(f"Fallback OpenAI initialization also failed: {e2}")
-        openai_client = None
+# Configure OpenAI
+openai.api_key = OPENAI_API_KEY
 
 # Printify API headers
 headers = {
@@ -587,8 +572,7 @@ Be conversational and focus on understanding what they want to use the product f
 Provide a brief explanation for why each recommendation would be good for their needs.
 Format your response in natural language, not as JSON."""
             
-            client = check_openai_client()
-            response = client.chat.completions.create(
+            response = openai.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": system_content},
