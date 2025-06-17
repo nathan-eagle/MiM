@@ -512,16 +512,13 @@ def get_ai_suggestion_old(user_message):
             current_product = extract_current_product_type(chat_history)
             return {"search_term": current_product, "conversational": True}, ai_message
             
-        # For logo adjustment requests, update the logo settings
+        # For logo adjustment requests, use conversation manager
         elif logo_adjustment_request:
-            # Parse the user message for logo adjustments
-            adjust_logo_settings(user_message)
-            
             # Get the current product type to reuse
             search_term = extract_current_product_type(chat_history)
             
-            # Return response with updated settings
-            ai_message = generate_logo_adjustment_response(user_message)
+            # Simple logo adjustment response since the functions were removed
+            ai_message = "I'll adjust the logo positioning for you!"
             add_message_to_chat("assistant", ai_message)
             
             return {"search_term": search_term, "adjust_logo": True}, ai_message
@@ -786,9 +783,8 @@ def get_ai_suggestion(user_message):
             
         # Handle logo adjustments
         elif logo_adjustment_request:
-            adjust_logo_settings(user_message)
             search_term = extract_current_product_type(chat_history)
-            ai_message = generate_logo_adjustment_response(user_message)
+            ai_message = "I'll adjust the logo positioning for you!"
             add_message_to_chat("assistant", ai_message)
             return {"search_term": search_term, "adjust_logo": True}, ai_message
         
@@ -1157,10 +1153,12 @@ def index():
             color_change_request = any(phrase in user_message.lower() for phrase in 
                                      ["make it", "change", "color", "blue", "red", "green", "black", "white"])
             
-            # Check if this is a product type change request (like "make it a shirt")
+            # Check if this is a product type change request (like "make it a shirt" or "I want the Zip Up Hoodie")
             product_type_change_request = any(phrase in user_message.lower() for phrase in 
                                           ["make it a", "change to", "switch to", "i want a", 
-                                           "show me a", "get me a", "now make it a", "can i see a"])
+                                           "show me a", "get me a", "now make it a", "can i see a",
+                                           "i want the", "i prefer the", "no - i want", "no! i want",
+                                           "let's see the", "actually, i prefer", "zip up", "full zip"])
             
             add_debug_log(f"🔍 Request analysis - Color change: {color_change_request}, Product change: {product_type_change_request}")
             
@@ -1174,6 +1172,7 @@ def index():
             
             # Initialize processing flags
             color_change_handled = False
+            product_change_handled = False
             should_create_product = False
             
             # If this is a color change request, keep the same product but change color
@@ -1266,32 +1265,102 @@ def index():
                 # Get what product they want to change to
                 search_term = None
                 
-                # Common product types to look for
-                product_types = ['t-shirt', 'tee', 'shirt', 'hoodie', 'sweatshirt', 
-                                'hat', 'cap', 'mug', 'cup', 'bag', 'tote']
+                # Handle specific product requests with more intelligent extraction
+                user_lower = user_message.lower()
                 
-                for product_type in product_types:
-                    if product_type in user_message.lower():
-                        search_term = product_type
-                        # For "shirt" we want to be more specific - prioritize t-shirt unless sweatshirt is specified
-                        if product_type == "shirt":
-                            if "sweat" in user_message.lower() or "hoodie" in user_message.lower():
-                                search_term = "sweatshirt" 
-                            elif "t-" in user_message.lower() or "tee" in user_message.lower():
-                                search_term = "t-shirt"
-                            else:
-                                search_term = "t-shirt"  # Default to t-shirt when just "shirt" is specified
-                        break
+                # Handle "zip up hoodie" specifically
+                if "zip up hoodie" in user_lower or "zip-up hoodie" in user_lower or "full zip hoodie" in user_lower:
+                    search_term = "Unisex Full Zip Hoodie"
+                elif "pullover hoodie" in user_lower:
+                    search_term = "pullover hoodie"
+                elif "windbreaker" in user_lower:
+                    search_term = "windbreaker"
+                # Common product types to look for
+                else:
+                    product_types = ['t-shirt', 'tee', 'shirt', 'hoodie', 'sweatshirt', 
+                                    'hat', 'cap', 'mug', 'cup', 'bag', 'tote']
+                    
+                    for product_type in product_types:
+                        if product_type in user_lower:
+                            search_term = product_type
+                            # For "shirt" we want to be more specific
+                            if product_type == "shirt":
+                                if "sweat" in user_lower or "hoodie" in user_lower:
+                                    search_term = "sweatshirt" 
+                                elif "t-" in user_lower or "tee" in user_lower:
+                                    search_term = "t-shirt"
+                                else:
+                                    search_term = "t-shirt"
+                            break
                 
                 if search_term:
-                    print(f"Product type change requested: {search_term}")
+                    add_debug_log(f"🔄 Product type change requested: {search_term}")
                     should_create_product = True
+                    product_change_handled = True
                     add_message_to_chat("assistant", f"Let me show you a {search_term} instead.")
+                    
+                    # Clear product memory to force new product selection
+                    current_product_memory.update({
+                        "blueprint_id": None,
+                        "blueprint_title": None,
+                        "print_provider_id": None,
+                        "current_color": None,
+                        "available_colors": [],
+                        "last_mockup_url": None
+                    })
+                    
+                    # Handle product change immediately
+                    try:
+                        add_debug_log(f"🔍 Searching for blueprint with term: '{search_term}'")
+                        blueprint_id, blueprint_title = find_blueprint_id(search_term)
+                        add_debug_log(f"📦 Found blueprint: ID={blueprint_id}, Title='{blueprint_title}'")
+                        
+                        if blueprint_id:
+                            providers = get_print_providers(blueprint_id)
+                            if providers:
+                                print_provider_id = providers[0]['id']
+                                
+                                shop_id = get_shop_id()
+                                image_id = upload_image(image_url)
+                                
+                                # Get all variants for the new product
+                                variant_ids = get_variants_for_product(blueprint_id, print_provider_id, None)
+                                
+                                product_id = create_product(shop_id, blueprint_id, print_provider_id, image_id, variant_ids)
+                                mockup_url = get_mockup_image(shop_id, product_id)
+                                success = True
+                                
+                                # Update product memory
+                                current_product_memory.update({
+                                    "blueprint_id": blueprint_id,
+                                    "blueprint_title": blueprint_title,
+                                    "print_provider_id": print_provider_id,
+                                    "last_mockup_url": mockup_url
+                                })
+                                
+                                # Add confirmation message for product change
+                                add_message_to_chat("assistant", f"I found a {blueprint_title} product for you! Here's what it looks like with your image.")
+                                
+                                # Add color options
+                                if current_product_memory.get("available_colors"):
+                                    colors_text = ", ".join(current_product_memory["available_colors"])
+                                    color_message = f"Available colors: {colors_text}. Just say 'make it [color]' to change the color!"
+                                    add_message_to_chat("assistant", color_message)
+                            else:
+                                error_message = f"Sorry, I couldn't find any print providers for this {blueprint_title}."
+                                add_message_to_chat("assistant", error_message)
+                        else:
+                            error_message = f"Sorry, I couldn't find that product. Would you like to try a different product?"
+                            add_message_to_chat("assistant", error_message)
+                            
+                    except Exception as e:
+                        error_message = f"Error processing product change: {str(e)}"
+                        add_message_to_chat("assistant", error_message)
                 else:
                     # If no specific product type found in the request, use AI suggestion
                     suggestion, ai_response = get_ai_suggestion(user_message)
                     search_term = suggestion.get('search_term')
-                    print(f"Original search term from AI: {search_term}")  # Debug
+                    add_debug_log(f"🤖 AI suggested product: {search_term}")
                     
                     if not image_url and 'image_url' in suggestion:
                         image_url = suggestion.get('image_url')
@@ -1470,7 +1539,7 @@ def index():
                         success = True
             
             # Try up to 3 search terms if we should create a product and haven't already handled it
-            if should_create_product and not color_change_handled:
+            if should_create_product and not color_change_handled and not product_change_handled:
                 original_search_term = search_term
                 attempted_terms = []  # Track all terms we've tried to avoid duplicates
                 
