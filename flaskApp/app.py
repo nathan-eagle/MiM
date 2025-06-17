@@ -55,7 +55,7 @@ if not OPENAI_API_KEY or not PRINTIFY_API_TOKEN:
     raise ValueError("Missing required environment variables: OPENAI_API_KEY and/or PRINTIFY_API_TOKEN")
 
 # Configure OpenAI
-openai.api_key = OPENAI_API_KEY
+openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
 # Printify API headers
 headers = {
@@ -558,7 +558,7 @@ Be conversational and focus on understanding what they want to use the product f
 Provide a brief explanation for why each recommendation would be good for their needs.
 Format your response in natural language, not as JSON."""
             
-            response = openai.chat.completions.create(
+            response = openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": system_content},
@@ -571,7 +571,7 @@ Format your response in natural language, not as JSON."""
             add_message_to_chat("assistant", ai_message)
             
             # Try to extract a primary recommendation from the text to use as search term
-            follow_up = openai.chat.completions.create(
+            follow_up = openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": "Extract the main product type being recommended in this message. Return a simple JSON with just one key 'search_term' containing the product type."},
@@ -601,7 +601,7 @@ Format your response in natural language, not as JSON."""
                 return {"search_term": current_product}, ai_message
         else:
             # Use the original product extraction approach for non-recommendation requests
-            response = openai.chat.completions.create(
+            response = openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that helps users find products on Printify. Your task is to extract the product type and relevant details from the user's message. Return a JSON with 'search_term' and optionally 'image_url' if mentioned. Focus on the main product type (hat, shirt, mug, etc.) and key attributes. If the user mentions a compound word (like 'lampshade'), consider breaking it into parts (lamp, shade) or look for synonyms or related terms that might be more common on an e-commerce platform."},
@@ -628,7 +628,7 @@ Format your response in natural language, not as JSON."""
                 return suggestion, ai_message
             except Exception as e:
                 # If JSON parsing fails, have the AI try again with a more structured format
-                follow_up = openai.chat.completions.create(
+                follow_up = openai_client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
                         {"role": "system", "content": "Extract the product information from the conversation and return ONLY a JSON object with keys 'search_term' and optionally 'image_url'."},
@@ -1450,7 +1450,7 @@ Explain briefly why each alternative might work for their needs. Be conversation
                             
                             try:
                                 # Ask the AI for suggestions
-                                suggestions_response = openai.chat.completions.create(
+                                suggestions_response = openai_client.chat.completions.create(
                                     model="gpt-3.5-turbo",
                                     messages=[
                                         {"role": "system", "content": "You are a helpful merchandise assistant suggesting alternative products."},

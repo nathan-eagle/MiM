@@ -99,10 +99,9 @@ class IntelligentColorSelector:
     def __init__(self):
         """Initialize the intelligent color selector."""
         # Initialize OpenAI client
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
+        openai.api_key = os.getenv('OPENAI_API_KEY')
+        if not openai.api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
-        self.client = openai.OpenAI(api_key=api_key)
     
     def select_color_variants(
         self,
@@ -232,7 +231,7 @@ Matching rules:
 5. Confidence: 1.0=exact, 0.8=good match, 0.5=fair match, 0.0=no match
 """
 
-            response = self.client.chat.completions.create(
+            response = openai.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are a color matching expert. Match user color requests to available product colors with intelligent reasoning."},
@@ -390,7 +389,7 @@ Provide response as JSON:
 }}
 """
 
-            response = self.client.chat.completions.create(
+            response = openai.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are a color recommendation expert for custom merchandise."},
