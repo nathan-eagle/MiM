@@ -154,19 +154,53 @@ def add_debug_log(message):
     print(message)  # Also print to console
     add_server_log(f"DEBUG: {message}")  # Add to in-memory server logs
 
-def extract_color_from_message(message):
-    """Extract color from user message - simplified fallback implementation"""
+def extract_color_from_message(message, available_colors=None):
+    """
+    Extract color from user message using intelligent matching.
+    
+    MODERN APPROACH: Instead of hardcoded color lists, this function now uses
+    the actual available colors from the product to provide accurate matching.
+    
+    Args:
+        message: User's message
+        available_colors: List of actual colors available for the product
+        
+    Returns:
+        str: Matched color name or None if no match found
+    """
     if not message:
         return None
     
-    # Basic color extraction - this was replaced by intelligent color selection
-    common_colors = ['red', 'blue', 'green', 'yellow', 'black', 'white', 'gray', 'grey', 
-                    'pink', 'purple', 'orange', 'brown', 'navy', 'maroon', 'cyan']
+    message_lower = message.lower().strip()
     
-    message_lower = message.lower()
+    # If we have actual available colors, use them for matching
+    if available_colors:
+        for color in available_colors:
+            color_lower = color.lower()
+            # Direct match
+            if color_lower in message_lower or message_lower in color_lower:
+                add_debug_log(f"🎨 Matched color '{color}' from available colors")
+                return color
+        
+        # Try partial matching for compound colors
+        for color in available_colors:
+            color_words = color.lower().split()
+            for word in color_words:
+                if len(word) > 3 and word in message_lower:
+                    add_debug_log(f"🎨 Partial matched color '{color}' via word '{word}'")
+                    return color
+    
+    # Fallback: Basic color extraction for when available_colors isn't provided
+    common_colors = ['red', 'blue', 'green', 'yellow', 'black', 'white', 'gray', 'grey', 
+                    'pink', 'purple', 'orange', 'brown', 'navy', 'maroon', 'cyan', 'royal',
+                    'dark', 'light', 'bright', 'forest', 'olive', 'crimson', 'gold', 'silver']
+    
     for color in common_colors:
         if color in message_lower:
+            add_debug_log(f"🎨 Fallback matched color '{color}'")
             return color
+    
+    add_debug_log(f"🚫 No color match found in message: '{message}'")
     return None
 
 def handle_compound_words(search_term):
@@ -936,14 +970,24 @@ def add_message_to_chat(role, content):
         
     # Skip if the last message with the same role had identical content
     if chat_history and chat_history[-1]["role"] == role and chat_history[-1]["content"] == content:
+        add_debug_log(f"🚫 Skipping duplicate message: {content[:50]}...")
         return
+    
+    # Also check the last 3 messages for near-duplicates to prevent spam
+    if len(chat_history) >= 3:
+        recent_messages = [msg["content"] for msg in chat_history[-3:] if msg["role"] == role]
+        if content in recent_messages:
+            add_debug_log(f"🚫 Skipping recent duplicate message: {content[:50]}...")
+            return
         
     # Skip any JSON-formatted messages (they contain user data but shouldn't be shown)
     if re.search(r'^\s*{.*}\s*$', content):
+        add_debug_log(f"🚫 Skipping JSON message: {content[:50]}...")
         return
         
     # Add the message
     chat_history.append({"role": role, "content": content})
+    add_debug_log(f"💬 Added {role} message: {content[:50]}...")
     
     # Log chat messages to server logs
     add_server_log(f"CHAT - {role.upper()}: {content}")
@@ -1208,6 +1252,19 @@ def index():
             if 'image_url' in request.form:
                 image_url = request.form['image_url']
             
+            # Prevent duplicate processing of the same message
+            if (chat_history and len(chat_history) >= 2 and 
+                chat_history[-2]["role"] == "user" and 
+                chat_history[-2]["content"] == user_message and
+                chat_history[-1]["role"] == "assistant"):
+                add_debug_log(f"🚫 Preventing duplicate processing of: {user_message}")
+                # Return the existing state without reprocessing
+                return render_template('index.html', mockup_url=current_product_memory.get("last_mockup_url"), 
+                                      attempted_searches=attempted_searches, search_term=user_message, 
+                                      image_url=image_url, chat_history=chat_history,
+                                      error_message=None, success=True, user_message="",
+                                      current_logo_settings=current_logo_settings, debug_logs=debug_logs)
+            
             # Add user message to chat history first
             add_message_to_chat("user", user_message)
             add_debug_log(f"💬 User message: {user_message}")
@@ -1256,31 +1313,28 @@ def index():
                 current_product = extract_current_product_type(chat_history)
                 search_term = current_product
                 add_debug_log(f"🎨 Color change requested for: {search_term}")
-                should_create_product = True
                 
-                # Extract the requested color
-                requested_color = extract_color_from_message(user_message)
-                if requested_color:
-                    add_message_to_chat("assistant", f"Let me show you a {requested_color} {search_term}!")
-                else:
-                    add_message_to_chat("assistant", f"Let me update the {search_term} for you!")
-                
-                # Create a simple suggestion object for consistency  
-                suggestion = {"search_term": search_term, "conversational": False, "adjust_logo": False}
-                
-                # Skip LLM processing for color changes - we already have what we need
-                add_debug_log(f"🎨 Color change complete, proceeding with search_term: {search_term}")
-                
-                # Set a flag to prevent re-processing
-                color_change_handled = True
-                
-                # Handle color change product creation immediately
-                try:
-                    add_debug_log(f"🔍 Searching for blueprint with term: '{search_term}'")
-                    blueprint_id, blueprint_title = find_blueprint_id(search_term)
-                    add_debug_log(f"📦 Found blueprint: ID={blueprint_id}, Title='{blueprint_title}'")
+                # Get the blueprint info for color extraction
+                blueprint_id, blueprint_title = find_blueprint_id(search_term)
+                if blueprint_id:
+                    # Get available colors from cache to help with color matching
+                    available_colors = []
+                    if product_catalog:
+                        available_colors = product_catalog.get_available_colors(blueprint_id)
                     
-                    if blueprint_id:
+                    add_debug_log(f"🎨 Available colors for matching: {available_colors}")
+                    
+                    # Extract the requested color using intelligent matching
+                    requested_color = extract_color_from_message(user_message, available_colors)
+                    add_debug_log(f"🎨 Extracted color: '{requested_color}'")
+                    
+                    if requested_color:
+                        add_message_to_chat("assistant", f"Let me show you a {requested_color} {search_term}!")
+                    else:
+                        add_message_to_chat("assistant", f"Let me update the {search_term} for you!")
+                    
+                    # Handle color change product creation
+                    try:
                         providers = get_print_providers(blueprint_id)
                         if providers:
                             print_provider_id = providers[0]['id']
@@ -1317,26 +1371,24 @@ def index():
                                     "last_mockup_url": mockup_url
                                 })
                                 
-                                # Add confirmation message with alternatives for color change
-                                add_message_to_chat("assistant", f"I found a {blueprint_title} product for you! Here's what it looks like with your image.")
-                                
-                                # Add product alternatives suggestion
-                                if current_product_memory.get("available_colors"):
-                                    colors_text = ", ".join(current_product_memory["available_colors"])
-                                    color_message = f"Available colors: {colors_text}. Just say 'make it [color]' to change the color!"
-                                    add_message_to_chat("assistant", color_message)
+                                # Add confirmation message (only if successful)
+                                if success and not error_message:
+                                    if requested_color:
+                                        add_message_to_chat("assistant", f"Perfect! Here's your {requested_color} {blueprint_title}.")
+                                    else:
+                                        add_message_to_chat("assistant", f"Here's your updated {blueprint_title}.")
                         else:
                             error_message = f"Sorry, I couldn't find any print providers for this {blueprint_title}."
                             add_message_to_chat("assistant", error_message)
-                    else:
-                        error_message = f"Sorry, I couldn't find that product. Would you like to try a different product?"
+                            
+                    except Exception as e:
+                        error_message = f"Error processing color change: {str(e)}"
                         add_message_to_chat("assistant", error_message)
-                        
-                except Exception as e:
-                    error_message = f"Error processing color change: {str(e)}"
+                else:
+                    error_message = f"Sorry, I couldn't find that product. Would you like to try a different product?"
                     add_message_to_chat("assistant", error_message)
                         
-                # Return immediately after color change processing
+                # Return immediately after color change processing to prevent duplicate handling
                 return render_template('index.html', mockup_url=mockup_url, attempted_searches=attempted_searches, 
                                       search_term=search_term, image_url=image_url, chat_history=chat_history,
                                       error_message=error_message, success=success, user_message="",
