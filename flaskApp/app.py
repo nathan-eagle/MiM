@@ -85,6 +85,10 @@ default_logo_settings = {
 # Store the current logo settings for the session
 current_logo_settings = default_logo_settings.copy()
 
+# Store last processed message to prevent duplicates
+last_processed_message = ""
+last_processed_time = 0
+
 # Initialize product catalog, conversation manager, and color selector
 product_catalog = None
 conversation_manager = None
@@ -805,10 +809,20 @@ def get_ai_suggestion(user_message):
     """
     global chat_history, current_logo_settings
     
-    # Handle conversational input without product requests
-    conversational_input = any(term in user_message.lower() 
-                            for term in ['thanks', 'thank you', 'great', 'awesome', 'perfect', 
-                                        'looks good', 'nice', 'cool', 'love it', 'amazing'])
+    # Expanded conversational input detection
+    conversational_phrases = [
+        'thanks', 'thank you', 'great', 'awesome', 'perfect', 'looks good', 'nice', 'cool', 
+        'love it', 'amazing', 'hello', 'hi', 'hey', 'what', 'how', 'why', 'when', 'where',
+        'this doesn\'t', 'not working', 'doesn\'t work', 'broken', 'issue', 'problem',
+        'help', 'what\'s', 'how\'s', 'what is', 'how is', 'i don\'t', 'can you', 'could you',
+        'please', 'sorry', 'excuse me', 'pardon', 'understand', 'confused'
+    ]
+    
+    conversational_input = any(phrase in user_message.lower() for phrase in conversational_phrases)
+    
+    # Check if it's clearly a product request (contains product words)
+    product_words = ['hat', 'shirt', 'mug', 'cup', 'hoodie', 'product', 'bag', 'tote', 'cap', 'beanie']
+    has_product_word = any(word in user_message.lower() for word in product_words)
     
     # Handle logo adjustment requests
     logo_adjustment_request = any(term in user_message.lower() 
@@ -816,22 +830,32 @@ def get_ai_suggestion(user_message):
                                            'up', 'down', 'move', 'position', 'scale', 'size'])
     
     try:
-        # Handle conversational responses
-        if conversational_input and not any(term in user_message.lower() for term in ['hat', 'shirt', 'mug', 'cup', 'hoodie', 'product']):
-            ai_message = "You're welcome! Is there anything else you'd like to customize or try?"
+        # Handle conversational responses (when it's clearly conversational and no product mentioned)
+        if conversational_input and not has_product_word and not logo_adjustment_request:
+            add_debug_log(f"🗣️ Detected conversational input: {user_message}")
+            
+            # Generate contextual response based on current state
+            if current_product_memory.get("blueprint_title"):
+                current_product = current_product_memory["blueprint_title"]
+                ai_message = f"I see you have a {current_product} displayed. Is there anything you'd like to change about it, or would you like to try a different product?"
+            else:
+                ai_message = "Hello! I can help you create custom products. What would you like to make today?"
+                
             add_message_to_chat("assistant", ai_message)
             current_product = extract_current_product_type(chat_history)
             return {"search_term": current_product, "conversational": True}, ai_message
             
         # Handle logo adjustments
         elif logo_adjustment_request:
+            add_debug_log(f"🔧 Detected logo adjustment request: {user_message}")
             search_term = extract_current_product_type(chat_history)
             ai_message = "I'll adjust the logo positioning for you!"
             add_message_to_chat("assistant", ai_message)
             return {"search_term": search_term, "adjust_logo": True}, ai_message
         
-        # Use LLM for intelligent product selection
+        # Use LLM for intelligent product selection (only for clear product requests)
         else:
+            add_debug_log(f"🤖 Processing as product request: {user_message}")
             # Format conversation history for LLM
             formatted_history = []
             for msg in chat_history[-5:]:  # Last 5 messages for context
@@ -1252,7 +1276,32 @@ def index():
             if 'image_url' in request.form:
                 image_url = request.form['image_url']
             
-            # Prevent duplicate processing of the same message
+            # Enhanced duplicate prevention using global tracking
+            global last_processed_message, last_processed_time
+            import time
+            current_time = time.time()
+            
+            if (user_message == last_processed_message and 
+                current_time - last_processed_time < 5):  # 5 second window
+                add_debug_log(f"🚫 Preventing duplicate processing of: {user_message} (within 5 seconds)")
+                # Return the existing state without reprocessing
+                return render_template('index.html', 
+                                      mockup_url=current_product_memory.get("last_mockup_url"), 
+                                      attempted_searches=attempted_searches, 
+                                      search_term=user_message, 
+                                      image_url=image_url, 
+                                      chat_history=chat_history,
+                                      error_message=None, 
+                                      success=bool(current_product_memory.get("last_mockup_url")), 
+                                      user_message="",
+                                      current_logo_settings=current_logo_settings, 
+                                      debug_logs=debug_logs)
+            
+            # Update tracking variables
+            last_processed_message = user_message
+            last_processed_time = current_time
+            
+            # Prevent duplicate processing of the same message (legacy check)
             if (chat_history and len(chat_history) >= 2 and 
                 chat_history[-2]["role"] == "user" and 
                 chat_history[-2]["content"] == user_message and
@@ -1532,10 +1581,11 @@ def index():
                 
                 # If this is a purely conversational message, just show the conversation without creating a product
                 if suggestion.get('conversational', False):
+                    add_debug_log(f"✅ Conversational message handled, preserving current state")
                     should_create_product = False
-                    # Keep the current mockup if there is one
-                    if 'mockup_url' in request.form and request.form['mockup_url']:
-                        mockup_url = request.form['mockup_url']
+                    # Preserve the current mockup and success state
+                    mockup_url = current_product_memory.get("last_mockup_url")
+                    success = bool(mockup_url)
                     return render_template('index.html', mockup_url=mockup_url, attempted_searches=attempted_searches, 
                                           search_term=search_term, image_url=image_url, chat_history=chat_history,
                                           error_message=error_message, success=success, user_message="",
