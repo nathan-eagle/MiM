@@ -98,7 +98,18 @@ class ProductCatalog:
     
     def __init__(self, api_token: str, cache_duration_hours: int = 24):
         self.api_token = api_token
-        self.cache_duration = timedelta(hours=cache_duration_hours)
+        
+        # Extend cache duration for serverless environments like Vercel
+        # Since we can't persist files, we want to avoid rebuilds as much as possible
+        if os.getenv('VERCEL') or os.getenv('AWS_LAMBDA_FUNCTION_NAME'):
+            # In serverless, extend cache to 7 days to reduce rebuilds
+            self.cache_duration = timedelta(hours=168)  # 7 days
+            self.logger = logging.getLogger(__name__)
+            self.logger.info("🌐 Serverless environment detected - extending cache duration to 7 days")
+        else:
+            # Local development uses original duration
+            self.cache_duration = timedelta(hours=cache_duration_hours)
+            
         self.headers = {
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json",
@@ -264,53 +275,74 @@ class ProductCatalog:
     
     def get_product_variants(self, product_id: int, print_provider_id: Optional[int] = None) -> List[ProductVariant]:
         """
-        Get all variants (colors, sizes) for a specific product from cache.
+        Get all variants (colors, sizes) for a specific product with smart caching.
+        
+        SERVERLESS-OPTIMIZED: This method now uses lazy loading to avoid timeouts.
+        It only fetches variants when specifically requested, not during catalog initialization.
         
         Args:
             product_id: The Printify blueprint ID
             print_provider_id: Specific print provider ID (optional, filters results)
             
         Returns:
-            List of ProductVariant objects from cache
+            List of ProductVariant objects (from cache or freshly fetched)
         """
         # Get product from cache
         product = self.get_product_by_id(product_id)
         if not product:
             return []
         
-        # Return cached variants (optionally filtered by print provider)
-        if print_provider_id is None:
-            return product.variants
-        else:
-            # Filter variants by print provider if specified
-            # Note: This is approximate since we don't store provider_id per variant
-            # but in practice most products work with primary provider
-            return product.variants
+        # If variants are already cached for this product, return them
+        if product.variants:
+            self.logger.info(f"Returning {len(product.variants)} cached variants for product {product_id}")
+            if print_provider_id is None:
+                return product.variants
+            else:
+                # Filter variants by print provider if specified
+                return product.variants
+        
+        # If not cached, fetch variants now (lazy loading)
+        self.logger.info(f"Lazy loading variants for product {product_id}")
+        try:
+            variants = self._fetch_all_variants(product_id, product.print_providers)
+            
+            # Cache the variants for future requests
+            product.variants = variants
+            
+            # Save updated cache to disk (if possible in serverless environment)
+            try:
+                self._save_cache_to_disk()
+            except Exception as e:
+                self.logger.warning(f"Could not save cache in serverless environment: {e}")
+            
+            return variants
+            
+        except Exception as e:
+            self.logger.error(f"Error lazy loading variants for product {product_id}: {e}")
+            return []
 
     def get_available_colors(self, product_id: int) -> List[str]:
-        """Get all available colors for a product from cache"""
-        product = self.get_product_by_id(product_id)
-        if not product:
-            return []
+        """Get all available colors for a product (triggers lazy loading if needed)"""
+        # This will trigger lazy loading if variants aren't cached yet
+        variants = self.get_product_variants(product_id)
         
         # Extract unique colors from variants
         colors = set()
-        for variant in product.variants:
+        for variant in variants:
             if variant.color and variant.color.strip():
                 colors.add(variant.color.strip().title())
         
         return sorted(list(colors))
 
     def get_variants_by_color(self, product_id: int, color: str) -> List[ProductVariant]:
-        """Get all variants of a specific color for a product from cache"""
-        product = self.get_product_by_id(product_id)
-        if not product:
-            return []
+        """Get all variants of a specific color for a product (triggers lazy loading if needed)"""
+        # This will trigger lazy loading if variants aren't cached yet
+        variants = self.get_product_variants(product_id)
         
         color_lower = color.lower()
         matching_variants = []
         
-        for variant in product.variants:
+        for variant in variants:
             if variant.color and color_lower in variant.color.lower():
                 matching_variants.append(variant)
         
@@ -328,7 +360,7 @@ class ProductCatalog:
             return []
     
     def _process_blueprint(self, blueprint: Dict[str, Any]) -> Optional[Product]:
-        """Convert a Printify blueprint into a Product object with cached variants"""
+        """Convert a Printify blueprint into a Product object with lazy variant loading"""
         try:
             # Determine category from title
             category = self._categorize_product(blueprint["title"])
@@ -339,8 +371,9 @@ class ProductCatalog:
             # Extract tags from title for better searchability
             tags = self._extract_tags(blueprint["title"])
             
-            # Pre-load all variants for this product to cache colors/sizes
-            variants = self._fetch_all_variants(blueprint["id"], print_providers)
+            # Use lazy loading for variants to avoid Vercel timeouts
+            # Variants will be loaded when specifically requested via get_product_variants()
+            variants = []  # Start empty, load on demand
             
             product = Product(
                 id=blueprint["id"],
@@ -348,11 +381,11 @@ class ProductCatalog:
                 description=blueprint.get("description", blueprint["title"]),
                 category=category,
                 tags=tags,
-                variants=variants,  # Now cached instead of loaded on demand
+                variants=variants,  # Empty initially, populated on demand
                 print_providers=print_providers,
                 images=[],  # Blueprint images not typically needed
                 created_at=datetime.now().isoformat(),
-                available=len(print_providers) > 0 and len(variants) > 0  # Available if has providers and variants
+                available=len(print_providers) > 0  # Available if has providers
             )
             
             return product
