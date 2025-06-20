@@ -812,6 +812,20 @@ def handle_product_not_found(user_message, original_request=""):
         add_debug_log(f"❌ Error in intelligent error handling: {e}")
         return "I couldn't find that product, but let me suggest some popular alternatives like t-shirts, mugs, or hats."
 
+def should_process_message(message):
+    """Check if message should be processed (not a duplicate within 5 seconds)"""
+    global last_processed_message, last_processed_time
+    current_time = time.time()
+    
+    if (message.strip() == last_processed_message.strip() and 
+        current_time - last_processed_time < 5):
+        return False
+    
+    # Update the last processed message and time
+    last_processed_message = message.strip()
+    last_processed_time = current_time
+    return True
+
 def get_llm_decision(user_message):
     """
     Single LLM decision point that handles ALL user requests intelligently
@@ -879,12 +893,14 @@ def get_llm_decision(user_message):
             # CRITICAL: Validate selected_product to prevent None searches
             selected_product = decision.get("selected_product")
             if not selected_product or selected_product.lower() in ['none', 'null', '']:
-                add_debug_log("🛡️ LLM returned invalid product, using conversational mode")
+                add_debug_log("🛡️ LLM returned invalid product, using fallback product")
+                # Use a safe fallback product instead of None
+                fallback_product = "Baseball Cap"  # Safe fallback that exists in catalog
                 return {
-                    "search_term": None,
-                    "conversation_only": True,
-                    "confidence": 0.8
-                }, decision.get("response_message", "I'd be happy to help you find something!")
+                    "search_term": fallback_product,
+                    "conversation_only": False,
+                    "confidence": 0.6
+                }, decision.get("response_message", "Let me show you this product instead!")
             
             add_debug_log(f"🤖 LLM selected product: {selected_product}")
             
@@ -904,22 +920,24 @@ def get_llm_decision(user_message):
             return suggestion, ai_response
             
         except json.JSONDecodeError:
-            # If JSON parsing fails, treat as conversational response
+            # If JSON parsing fails, use fallback product
             add_debug_log("🗣️ LLM provided conversational response (JSON parse failed)")
+            fallback_product = "Baseball Cap"  # Safe fallback
             return {
-                "search_term": None,
-                "conversation_only": True,
-                "confidence": 0.7
-            }, llm_response
+                "search_term": fallback_product,
+                "conversation_only": False,
+                "confidence": 0.6
+            }, "Let me show you this product instead!"
             
     except Exception as e:
         add_debug_log(f"❌ LLM decision error: {e}")
         # CRITICAL: Never return None - always return 2 safe values
+        fallback_product = "Baseball Cap"  # Safe fallback
         return {
-            "search_term": None,
-            "conversation_only": True,
+            "search_term": fallback_product,
+            "conversation_only": False,
             "confidence": 0.5
-        }, "I'm having trouble understanding right now. Could you try rephrasing your request?"
+        }, "Let me show you this product instead!"
 
 def get_ai_suggestion(user_message):
     """

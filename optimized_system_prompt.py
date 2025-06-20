@@ -161,18 +161,20 @@ INSTRUCTIONS:
 2. Consider their specific needs, preferences, and use case
 3. Match colors if mentioned in their request
 4. Provide clear reasoning for your choice
+5. Use the EXACT product title from the list above
 
 RESPONSE FORMAT:
 {{
-    "selected_product_id": 123,
-    "selected_product_title": "exact title from list above",
+    "selected_product": "exact title from list above",
+    "category": "{category}",
     "reasoning": "detailed explanation of why this product fits",
-    "color_match": "how well colors match their request",
+    "color_preference": "color if mentioned, null otherwise",
     "confidence": 0.90,
-    "response_message": "friendly message explaining your choice"
+    "response_message": "friendly message explaining your choice",
+    "requires_product_details": true
 }}
 
-Select the product that best matches their needs and explain why it's perfect for them."""
+CRITICAL: Use the EXACT product title from the list above. Do not modify or shorten the title."""
 
     return prompt
 
