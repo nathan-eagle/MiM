@@ -805,6 +805,7 @@ def get_llm_decision(user_message):
     """
     Single LLM decision point that handles ALL user requests intelligently
     CRITICAL: Never returns None to prevent 'None' product searches
+    FIXED: Returns 2 values (suggestion, ai_response) for proper unpacking
     """
     try:
         add_debug_log(f"🤖 Single LLM decision point processing: {user_message}")
@@ -816,12 +817,12 @@ def get_llm_decision(user_message):
         if (user_message.strip() == last_processed_message.strip() and 
             current_time - last_processed_time < 5):
             add_debug_log(f"🚫 Preventing duplicate processing of: {user_message} (within 5 seconds)")
-            # Return last valid response instead of None
+            # Return 2 values with safe fallback
             return {
                 "search_term": "shirt",  # Safe fallback
                 "conversation_only": True,
                 "confidence": 0.5
-            }
+            }, "I'm processing that request right now."
         
         last_processed_message = user_message.strip()
         last_processed_time = current_time
@@ -871,23 +872,25 @@ def get_llm_decision(user_message):
                 return {
                     "search_term": None,
                     "conversation_only": True,
-                    "confidence": 0.8,
-                    "response_message": decision.get("response_message", "I'd be happy to help you find something!")
-                }
+                    "confidence": 0.8
+                }, decision.get("response_message", "I'd be happy to help you find something!")
             
             add_debug_log(f"🤖 LLM selected product: {selected_product}")
             
-            # Return the decision
-            return {
+            # Return 2 values: suggestion dict and response message
+            suggestion = {
                 "search_term": selected_product,
                 "category": decision.get("category"),
                 "reasoning": decision.get("reasoning"),
                 "color_preference": decision.get("color_preference"),
                 "confidence": decision.get("confidence", 0.8),
                 "requires_product_details": decision.get("requires_product_details", False),
-                "conversation_only": False,
-                "response_message": decision.get("response_message", "Let me find that for you!")
+                "conversation_only": False
             }
+            
+            ai_response = decision.get("response_message", "Let me find that for you!")
+            
+            return suggestion, ai_response
             
         except json.JSONDecodeError:
             # If JSON parsing fails, treat as conversational response
@@ -895,19 +898,17 @@ def get_llm_decision(user_message):
             return {
                 "search_term": None,
                 "conversation_only": True,
-                "confidence": 0.7,
-                "response_message": llm_response
-            }
+                "confidence": 0.7
+            }, llm_response
             
     except Exception as e:
         add_debug_log(f"❌ LLM decision error: {e}")
-        # CRITICAL: Never return None - always return a safe fallback
+        # CRITICAL: Never return None - always return 2 safe values
         return {
             "search_term": None,
             "conversation_only": True,
-            "confidence": 0.5,
-            "response_message": "I'm having trouble understanding right now. Could you try rephrasing your request?"
-        }
+            "confidence": 0.5
+        }, "I'm having trouble understanding right now. Could you try rephrasing your request?"
 
 def get_ai_suggestion(user_message):
     """

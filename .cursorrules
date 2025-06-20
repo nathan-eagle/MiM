@@ -1,0 +1,62 @@
+# Cursor AI Assistant Rules for MiM Project
+
+## 🚨 CRITICAL RULE: NEVER LOAD FRESH PRODUCT CATALOG 🚨
+
+**NEVER ATTEMPT TO LOAD, UPDATE, OR REFRESH THE PRODUCT CATALOG**
+
+The product catalog has been optimized and is current. Any attempts to load fresh data will:
+- Cause unnecessary API calls to Printify
+- Trigger expensive data processing
+- Risk breaking the optimized cache system
+- Waste time and resources
+
+### What to do instead:
+- ✅ ALWAYS use the existing `product_cache.json` (optimized, 0.4MB)
+- ✅ Use `product_cache_complete.json` for detailed variants when needed
+- ✅ Use `catalog._load_cache_from_disk()` for testing
+- ✅ Set cache duration to 168+ hours to avoid expiration
+
+### When writing tests:
+- ✅ Mock API calls instead of making real ones
+- ✅ Use existing cache data for validation
+- ✅ Test with extended cache duration (168 hours / 7 days)
+- ✅ Skip tests if cache not available rather than loading fresh
+
+### Code patterns to AVOID:
+```python
+# ❌ NEVER DO THIS
+catalog.load_catalog()  # Triggers fresh API calls
+catalog.load_catalog(force_refresh=True)  # Triggers fresh API calls
+product_catalog = create_product_catalog()  # May trigger fresh loading
+```
+
+### Code patterns to USE:
+```python
+# ✅ ALWAYS DO THIS
+catalog = ProductCatalog(api_token, cache_duration_hours=168)  # 7 days
+success = catalog._load_cache_from_disk()  # Uses existing cache only
+if not success:
+    return  # Skip test rather than load fresh
+```
+
+## Other Rules
+
+### File Creation Policy
+- Try not to create new files unless explicitly instructed
+- Focus on modifying existing code to implement required functionality
+- Avoid refactoring or style changes unless specifically requested
+- Keep implementations simple - the simplest solution is generally the best
+
+### Error Handling
+- Never return `None` from functions that could cause downstream issues
+- Always provide safe fallbacks for production code
+- Validate inputs to prevent invalid searches (e.g., 'None', 'null', '')
+- Use proper error handling with try/catch blocks
+
+### Testing
+- Write comprehensive tests that would catch production issues
+- Mock external dependencies (APIs, databases, etc.)
+- Test error scenarios and edge cases
+- Ensure tests can run without requiring fresh data or API calls
+
+Remember: The product catalog is ALREADY optimized and current. There is no need to ever refresh it unless explicitly requested by the user. 
