@@ -1,4 +1,5 @@
 import os
+import json  # ADD MISSING JSON IMPORT
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
@@ -800,6 +801,114 @@ def handle_product_not_found(user_message, original_request=""):
         add_debug_log(f"❌ Error in intelligent error handling: {e}")
         return "I couldn't find that product, but let me suggest some popular alternatives like t-shirts, mugs, or hats."
 
+def get_llm_decision(user_message):
+    """
+    Single LLM decision point that handles ALL user requests intelligently
+    CRITICAL: Never returns None to prevent 'None' product searches
+    """
+    try:
+        add_debug_log(f"🤖 Single LLM decision point processing: {user_message}")
+        
+        # Prevent duplicate processing within 5 seconds
+        global last_processed_message, last_processed_time
+        current_time = time.time()
+        
+        if (user_message.strip() == last_processed_message.strip() and 
+            current_time - last_processed_time < 5):
+            add_debug_log(f"🚫 Preventing duplicate processing of: {user_message} (within 5 seconds)")
+            # Return last valid response instead of None
+            return {
+                "search_term": "shirt",  # Safe fallback
+                "conversation_only": True,
+                "confidence": 0.5
+            }
+        
+        last_processed_message = user_message.strip()
+        last_processed_time = current_time
+        
+        # Import the optimized system prompt
+        sys.path.append('..')
+        from optimized_system_prompt import get_system_prompt_for_request
+        
+        # Get optimized system prompt
+        system_prompt = get_system_prompt_for_request(user_message, chat_history)
+        
+        # Build messages for LLM
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        # Add conversation history (last 5 messages for context)
+        if chat_history:
+            messages.extend(chat_history[-5:])
+        
+        # Add current user message
+        messages.append({"role": "user", "content": user_message})
+        
+        # Get LLM response
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=0.3,
+            max_tokens=800
+        )
+        
+        # Parse response
+        llm_response = response.choices[0].message.content
+        
+        # Try to parse JSON response
+        try:
+            if "```json" in llm_response:
+                start = llm_response.find("```json") + 7
+                end = llm_response.find("```", start)
+                if end != -1:
+                    llm_response = llm_response[start:end].strip()
+            
+            decision = json.loads(llm_response)
+            
+            # CRITICAL: Validate selected_product to prevent None searches
+            selected_product = decision.get("selected_product")
+            if not selected_product or selected_product.lower() in ['none', 'null', '']:
+                add_debug_log("🛡️ LLM returned invalid product, using conversational mode")
+                return {
+                    "search_term": None,
+                    "conversation_only": True,
+                    "confidence": 0.8,
+                    "response_message": decision.get("response_message", "I'd be happy to help you find something!")
+                }
+            
+            add_debug_log(f"🤖 LLM selected product: {selected_product}")
+            
+            # Return the decision
+            return {
+                "search_term": selected_product,
+                "category": decision.get("category"),
+                "reasoning": decision.get("reasoning"),
+                "color_preference": decision.get("color_preference"),
+                "confidence": decision.get("confidence", 0.8),
+                "requires_product_details": decision.get("requires_product_details", False),
+                "conversation_only": False,
+                "response_message": decision.get("response_message", "Let me find that for you!")
+            }
+            
+        except json.JSONDecodeError:
+            # If JSON parsing fails, treat as conversational response
+            add_debug_log("🗣️ LLM provided conversational response (JSON parse failed)")
+            return {
+                "search_term": None,
+                "conversation_only": True,
+                "confidence": 0.7,
+                "response_message": llm_response
+            }
+            
+    except Exception as e:
+        add_debug_log(f"❌ LLM decision error: {e}")
+        # CRITICAL: Never return None - always return a safe fallback
+        return {
+            "search_term": None,
+            "conversation_only": True,
+            "confidence": 0.5,
+            "response_message": "I'm having trouble understanding right now. Could you try rephrasing your request?"
+        }
+
 def get_ai_suggestion(user_message):
     """
     SIMPLIFIED LLM-Driven Product Selection System
@@ -1552,7 +1661,7 @@ def index():
                 
                 # If no specific product type found in the request, use AI suggestion
                 if not search_term:
-                    suggestion, ai_response = get_ai_suggestion(user_message)
+                    suggestion, ai_response = get_llm_decision(user_message)
                     search_term = suggestion.get('search_term')
                     add_debug_log(f"🤖 AI suggested product: {search_term}")
                     
@@ -1572,7 +1681,7 @@ def index():
                 
                 add_debug_log(f"🤖 Calling LLM system for: '{user_message}'")
                 # Get AI suggestion for all types of requests
-                suggestion, ai_response = get_ai_suggestion(user_message)
+                suggestion, ai_response = get_llm_decision(user_message)
                 search_term = suggestion.get('search_term')
                 add_debug_log(f"🤖 LLM selected product: {search_term}")
                 

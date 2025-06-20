@@ -218,6 +218,7 @@ class ProductCatalog:
     def search_products(self, query: str, limit: int = 10) -> List[Product]:
         """
         Search products using semantic matching on titles and descriptions.
+        CRITICAL: Prevents searches for 'None' and other invalid terms
         
         Args:
             query: Search query string
@@ -229,7 +230,18 @@ class ProductCatalog:
         if not self._is_cache_valid():
             self.load_catalog()
         
-        query_lower = query.lower()
+        # CRITICAL: Validate query to prevent deployment issues
+        if not query or not query.strip():
+            return []
+        
+        query_lower = query.lower().strip()
+        
+        # CRITICAL: Block problematic search terms that cause deployment issues
+        invalid_terms = ['none', 'null', '', 'undefined', 'nan']
+        if query_lower in invalid_terms:
+            self.logger.warning(f"Blocked invalid search term: '{query}'")
+            return []
+        
         matches = []
         
         # Simple text-based search for now (can be enhanced with embeddings later)
