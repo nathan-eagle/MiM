@@ -14,7 +14,7 @@ import logging
 from datetime import datetime
 from dotenv import load_dotenv
 sys.path.append('..')
-from product_catalog import create_product_catalog
+from product_catalog import create_product_catalog, ProductCatalog
 from llm_product_selection import get_llm_product_selection
 from conversation_manager import ConversationManager, ConversationContext
 from intelligent_color_selection import IntelligentColorSelector
@@ -102,11 +102,20 @@ def init_product_catalog():
     if product_catalog is None:
         try:
             add_server_log("Starting product catalog initialization...")
-            product_catalog = create_product_catalog()
-            add_server_log("Product catalog created, loading catalog...")
-            success = product_catalog.load_catalog()
+            
+            # CRITICAL: Use extended cache duration to prevent expiration
+            # Your optimized cache should never expire unless manually refreshed
+            api_token = os.getenv('PRINTIFY_API_TOKEN')
+            product_catalog = ProductCatalog(api_token, cache_duration_hours=8760)  # 1 year = 365 * 24
+            
+            add_server_log("Product catalog created with extended cache duration (1 year)")
+            add_server_log("Loading from existing optimized cache...")
+            
+            # ONLY load from existing cache - NEVER trigger fresh loading
+            success = product_catalog._load_cache_from_disk()
+            
             if success:
-                add_server_log("Product catalog initialized successfully")
+                add_server_log("Product catalog initialized successfully from optimized cache")
                 # Initialize conversation manager with the catalog
                 add_server_log("Initializing conversation manager...")
                 conversation_manager = ConversationManager(product_catalog)
@@ -120,12 +129,14 @@ def init_product_catalog():
                 error_handler = IntelligentErrorHandler(product_catalog, headers)
                 add_server_log("Intelligent error handler initialized successfully")
             else:
-                add_server_log("Failed to initialize product catalog")
+                add_server_log("⚠️ Failed to load optimized cache - using minimal fallback mode")
+                # Don't set product_catalog to None - leave it with empty cache
+                # This prevents fresh loading attempts
         except Exception as e:
             add_server_log(f"Error initializing product catalog: {e}")
             import traceback
             add_server_log(f"Full traceback: {traceback.format_exc()}")
-            product_catalog = None
+            # Don't set to None - keep the catalog instance to prevent fresh loading
             conversation_manager = None
             color_selector = None
 

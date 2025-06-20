@@ -561,11 +561,14 @@ class ProductCatalog:
     def _load_optimized_cache(self, cache_data: Dict) -> bool:
         """Load the new optimized cache format"""
         try:
-            # Check if cache is still valid
+            # Check if cache exists and has data - DO NOT check expiration for optimized cache
+            # The optimized cache should always be used unless manually refreshed
             last_update = datetime.fromisoformat(cache_data['last_update'])
-            if datetime.now() - last_update > self.cache_duration:
-                self.logger.info("Optimized cache expired")
-                return False
+            
+            # CRITICAL: Never reject optimized cache due to expiration
+            # Log the age but always use it to prevent fresh API loading
+            cache_age = datetime.now() - last_update
+            self.logger.info(f"Loading optimized cache (age: {cache_age.days} days)")
             
             # Load products from optimized format
             self._products_cache = {}
