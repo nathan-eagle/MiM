@@ -97,30 +97,28 @@ class ProductCatalog:
     """
     
     def __init__(self, api_token: str, cache_duration_hours: int = 24):
-        self.api_token = api_token
+        """
+        Initialize ProductCatalog with API token and cache settings
         
-        # Extend cache duration for serverless environments like Vercel
-        # Since we can't persist files, we want to avoid rebuilds as much as possible
-        if os.getenv('VERCEL') or os.getenv('AWS_LAMBDA_FUNCTION_NAME'):
-            # In serverless, extend cache to 7 days to reduce rebuilds
-            self.cache_duration = timedelta(hours=168)  # 7 days
-            self.logger = logging.getLogger(__name__)
-            self.logger.info("🌐 Serverless environment detected - extending cache duration to 7 days")
-        else:
-            # Local development uses original duration
-            self.cache_duration = timedelta(hours=cache_duration_hours)
-            
+        Args:
+            api_token: Printify API token
+            cache_duration_hours: How long to keep cache valid (default 24 hours)
+        """
+        self.api_token = api_token
+        self.cache_duration = timedelta(hours=cache_duration_hours)
+        
+        # Setup headers for API requests
         self.headers = {
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json",
-            "User-Agent": "MiM-ProductCatalog"
+            "User-Agent": "ProductCatalog"
         }
         
-        # Initialize cache
+        # Internal caches
         self._products_cache: Dict[int, Product] = {}
         self._categories_cache: Dict[str, List[Product]] = {}
         self._last_cache_update: Optional[datetime] = None
-        self._cache_file = "product_cache.json"
+        self._cache_file = "product_cache.json"  # Use optimized cache
         
         # Initialize embeddings model (lazy loading)
         self._embedding_model = None
@@ -275,58 +273,52 @@ class ProductCatalog:
     
     def get_product_variants(self, product_id: int, print_provider_id: Optional[int] = None) -> List[ProductVariant]:
         """
-        Get all variants (colors, sizes) for a specific product with smart caching.
+        Get all variants for a product with lazy loading from complete cache
         
-        SERVERLESS-OPTIMIZED: This method now uses lazy loading to avoid timeouts.
-        It only fetches variants when specifically requested, not during catalog initialization.
-        
-        Args:
-            product_id: The Printify blueprint ID
-            print_provider_id: Specific print provider ID (optional, filters results)
-            
-        Returns:
-            List of ProductVariant objects (from cache or freshly fetched)
+        For optimized cache: loads detailed variants from product_cache_complete.json when needed
         """
         # Get product from cache
         product = self.get_product_by_id(product_id)
         if not product:
             return []
         
-        # If variants are already cached for this product, return them
+        # If variants already loaded, return them
         if product.variants:
-            self.logger.info(f"Returning {len(product.variants)} cached variants for product {product_id}")
             if print_provider_id is None:
                 return product.variants
             else:
-                # Filter variants by print provider if specified
-                return product.variants
+                return product.variants  # Filter by provider if needed
         
-        # If not cached, fetch variants now (lazy loading)
-        self.logger.info(f"Lazy loading variants for product {product_id}")
+        # Lazy load from complete cache if using optimized cache
+        if hasattr(product, '_available_colors'):  # Indicator of optimized cache
+            try:
+                return self._lazy_load_variants_from_complete_cache(product_id)
+            except Exception as e:
+                self.logger.warning(f"Failed to lazy load variants from complete cache: {e}")
+        
+        # Fallback: fetch from API
         try:
             variants = self._fetch_all_variants(product_id, product.print_providers)
-            
-            # Cache the variants for future requests
-            product.variants = variants
-            
-            # Save updated cache to disk (if possible in serverless environment)
-            try:
-                self._save_cache_to_disk()
-            except Exception as e:
-                self.logger.warning(f"Could not save cache in serverless environment: {e}")
-            
+            product.variants = variants  # Cache for future requests
             return variants
-            
         except Exception as e:
-            self.logger.error(f"Error lazy loading variants for product {product_id}: {e}")
+            self.logger.error(f"Error fetching variants for product {product_id}: {e}")
             return []
 
     def get_available_colors(self, product_id: int) -> List[str]:
-        """Get all available colors for a product (triggers lazy loading if needed)"""
-        # This will trigger lazy loading if variants aren't cached yet
+        """Get all available colors for a product (optimized for new cache format)"""
+        # Get product from cache
+        product = self.get_product_by_id(product_id)
+        if not product:
+            return []
+        
+        # If using optimized cache, colors are pre-computed
+        if hasattr(product, '_available_colors'):
+            return product._available_colors
+        
+        # Fallback: extract from variants (triggers lazy loading if needed)
         variants = self.get_product_variants(product_id)
         
-        # Extract unique colors from variants
         colors = set()
         for variant in variants:
             if variant.color and variant.color.strip():
@@ -535,7 +527,7 @@ class ProductCatalog:
             self.logger.warning(f"Failed to save cache to disk: {e}")
     
     def _load_cache_from_disk(self) -> bool:
-        """Load cache from disk if available and valid, including variants data"""
+        """Load cache from disk if available and valid, using optimized format"""
         try:
             if not os.path.exists(self._cache_file):
                 return False
@@ -543,13 +535,80 @@ class ProductCatalog:
             with open(self._cache_file, 'r') as f:
                 cache_data = json.load(f)
             
+            # Check if this is the new optimized format
+            if "total_products" in cache_data and "categories" in cache_data:
+                return self._load_optimized_cache(cache_data)
+            
+            # Fall back to old format loading
+            return self._load_legacy_cache(cache_data)
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to load cache from disk: {e}")
+            return False
+    
+    def _load_optimized_cache(self, cache_data: Dict) -> bool:
+        """Load the new optimized cache format"""
+        try:
             # Check if cache is still valid
             last_update = datetime.fromisoformat(cache_data['last_update'])
             if datetime.now() - last_update > self.cache_duration:
-                self.logger.info("Disk cache expired")
+                self.logger.info("Optimized cache expired")
                 return False
             
-            # Reconstruct products cache
+            # Load products from optimized format
+            self._products_cache = {}
+            self._categories_cache = {}
+            
+            products_data = cache_data.get("products", {})
+            categories_data = cache_data.get("categories", {})
+            
+            # Convert optimized products back to Product objects
+            for product_id_str, product_data in products_data.items():
+                # Create product with empty variants (will be lazy-loaded)
+                product = Product(
+                    id=product_data["id"],
+                    title=product_data["title"],
+                    description=product_data.get("description", product_data["title"]),
+                    category=product_data["category"],
+                    tags=product_data.get("tags", []),
+                    variants=[],  # Empty, will be lazy-loaded from complete cache
+                    print_providers=[],  # Will be fetched from API when needed
+                    images=[],
+                    created_at=datetime.now().isoformat(),
+                    available=product_data.get("available", True)
+                )
+                
+                # Store available colors for quick access
+                product._available_colors = product_data.get("available_colors", [])
+                
+                self._products_cache[product.id] = product
+            
+            # Rebuild categories cache from optimized format
+            for category, product_ids in categories_data.items():
+                category_products = []
+                for product_id in product_ids:
+                    if product_id in self._products_cache:
+                        category_products.append(self._products_cache[product_id])
+                self._categories_cache[category] = category_products
+            
+            self._last_cache_update = last_update
+            self.logger.info(f"Loaded {len(self._products_cache)} products from optimized cache")
+            return True
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to load optimized cache: {e}")
+            return False
+    
+    def _load_legacy_cache(self, cache_data: Dict) -> bool:
+        """Load the old cache format for backward compatibility"""
+        try:
+            # Check if cache is still valid
+            last_update = datetime.fromisoformat(cache_data['last_update'])
+            if datetime.now() - last_update > self.cache_duration:
+                self.logger.info("Legacy cache expired")
+                return False
+            
+            # Original cache loading logic
             self._products_cache = {}
             self._categories_cache = {}
             
@@ -573,7 +632,7 @@ class ProductCatalog:
                     description=product_data['description'],
                     category=product_data['category'],
                     tags=product_data['tags'],
-                    variants=variants,  # Now loaded from cache instead of empty
+                    variants=variants,
                     print_providers=product_data['print_providers'],
                     images=product_data['images'],
                     created_at=product_data['created_at'],
@@ -589,12 +648,47 @@ class ProductCatalog:
             
             self._last_cache_update = last_update
             total_variants = sum(len(p.variants) for p in self._products_cache.values())
-            self.logger.info(f"Loaded {len(self._products_cache)} products with {total_variants} variants from disk cache")
+            self.logger.info(f"Loaded {len(self._products_cache)} products with {total_variants} variants from legacy cache")
             return True
             
         except Exception as e:
-            self.logger.warning(f"Failed to load cache from disk: {e}")
+            self.logger.warning(f"Failed to load legacy cache: {e}")
             return False
+    
+    def _lazy_load_variants_from_complete_cache(self, product_id: int) -> List[ProductVariant]:
+        """Load detailed variants from the complete cache file"""
+        complete_cache_file = "product_cache_complete.json"
+        
+        if not os.path.exists(complete_cache_file):
+            raise Exception(f"Complete cache file not found: {complete_cache_file}")
+        
+        with open(complete_cache_file, 'r') as f:
+            complete_cache = json.load(f)
+        
+        product_data = complete_cache.get("products", {}).get(str(product_id))
+        if not product_data:
+            raise Exception(f"Product {product_id} not found in complete cache")
+        
+        # Convert variant data to ProductVariant objects
+        variants = []
+        for variant_data in product_data.get("variants", []):
+            variant = ProductVariant(
+                id=variant_data["id"],
+                title=variant_data["title"],
+                color=variant_data["color"],
+                size=variant_data.get("size"),
+                price=variant_data.get("price"),
+                available=variant_data.get("available", True)
+            )
+            variants.append(variant)
+        
+        # Cache the variants in the product object
+        product = self.get_product_by_id(product_id)
+        if product:
+            product.variants = variants
+        
+        self.logger.info(f"Lazy loaded {len(variants)} variants for product {product_id}")
+        return variants
     
     def generate_product_embeddings(self) -> bool:
         """

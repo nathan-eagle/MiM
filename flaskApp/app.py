@@ -802,92 +802,81 @@ def handle_product_not_found(user_message, original_request=""):
 
 def get_ai_suggestion(user_message):
     """
-    NEW LLM-Driven Product Selection System
+    SIMPLIFIED LLM-Driven Product Selection System
     
-    This replaces the old string matching heuristics with intelligent 
-    LLM-based product selection using the complete Printify catalog.
+    Single decision point that handles ALL user requests intelligently
+    without any hardcoded detection logic.
     """
     global chat_history, current_logo_settings
     
-    # Expanded conversational input detection
-    conversational_phrases = [
-        'thanks', 'thank you', 'great', 'awesome', 'perfect', 'looks good', 'nice', 'cool', 
-        'love it', 'amazing', 'hello', 'hi', 'hey', 'what', 'how', 'why', 'when', 'where',
-        'this doesn\'t', 'not working', 'doesn\'t work', 'broken', 'issue', 'problem',
-        'help', 'what\'s', 'how\'s', 'what is', 'how is', 'i don\'t', 'can you', 'could you',
-        'please', 'sorry', 'excuse me', 'pardon', 'understand', 'confused'
-    ]
-    
-    conversational_input = any(phrase in user_message.lower() for phrase in conversational_phrases)
-    
-    # Check if it's clearly a product request (contains product words)
-    product_words = ['hat', 'shirt', 'mug', 'cup', 'hoodie', 'product', 'bag', 'tote', 'cap', 'beanie']
-    has_product_word = any(word in user_message.lower() for word in product_words)
-    
-    # Handle logo adjustment requests
-    logo_adjustment_request = any(term in user_message.lower() 
-                               for term in ['smaller', 'bigger', 'larger', 'resize', 'left', 'right',
-                                           'up', 'down', 'move', 'position', 'scale', 'size'])
-    
     try:
-        # Handle conversational responses (when it's clearly conversational and no product mentioned)
-        if conversational_input and not has_product_word and not logo_adjustment_request:
-            add_debug_log(f"🗣️ Detected conversational input: {user_message}")
-            
-            # Generate contextual response based on current state
-            if current_product_memory.get("blueprint_title"):
-                current_product = current_product_memory["blueprint_title"]
-                ai_message = f"I see you have a {current_product} displayed. Is there anything you'd like to change about it, or would you like to try a different product?"
-            else:
-                ai_message = "Hello! I can help you create custom products. What would you like to make today?"
-                
-            add_message_to_chat("assistant", ai_message)
-            current_product = extract_current_product_type(chat_history)
-            return {"search_term": current_product, "conversational": True}, ai_message
-            
-        # Handle logo adjustments
-        elif logo_adjustment_request:
-            add_debug_log(f"🔧 Detected logo adjustment request: {user_message}")
-            search_term = extract_current_product_type(chat_history)
-            ai_message = "I'll adjust the logo positioning for you!"
-            add_message_to_chat("assistant", ai_message)
-            return {"search_term": search_term, "adjust_logo": True}, ai_message
+        add_debug_log(f"🤖 Single LLM decision point processing: {user_message}")
         
-        # Use LLM for intelligent product selection (only for clear product requests)
-        else:
-            add_debug_log(f"🤖 Processing as product request: {user_message}")
-            # Format conversation history for LLM
-            formatted_history = []
-            for msg in chat_history[-5:]:  # Last 5 messages for context
-                formatted_history.append({
-                    "role": msg["role"],
-                    "content": msg["content"]
-                })
+        # Import the optimized system prompt
+        sys.path.append('..')
+        from optimized_system_prompt import get_system_prompt_for_request
+        
+        # Get optimized system prompt
+        system_prompt = get_system_prompt_for_request(user_message, chat_history)
+        
+        # Build messages for LLM
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        # Add conversation history (last 5 messages for context)
+        if chat_history:
+            messages.extend(chat_history[-5:])
+        
+        # Add current user message
+        messages.append({"role": "user", "content": user_message})
+        
+        # Get LLM response
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=0.3,
+            max_tokens=800
+        )
+        
+        # Parse response
+        llm_response = response.choices[0].message.content
+        
+        # Try to parse JSON response
+        try:
+            if "```json" in llm_response:
+                start = llm_response.find("```json") + 7
+                end = llm_response.find("```", start)
+                if end != -1:
+                    llm_response = llm_response[start:end].strip()
             
-            # Get LLM product selection
-            success, llm_response, error = get_llm_product_selection(user_message, formatted_history)
+            decision = json.loads(llm_response)
+            add_debug_log(f"🤖 LLM Decision: {decision.get('selected_product', 'conversational')}")
             
-            if success and llm_response:
-                # Add the LLM's response to chat history
-                add_message_to_chat("assistant", llm_response.response_message)
-                
-                # Return the search term and message
-                return {
-                    "search_term": llm_response.primary_product.product_title,
-                    "product_id": llm_response.primary_product.product_id,
-                    "category": llm_response.primary_product.category,
-                    "confidence": llm_response.primary_product.confidence,
-                    "llm_driven": True
-                }, llm_response.response_message
-            else:
-                # Fallback to old system if LLM fails
-                add_debug_log(f"LLM selection failed, falling back to old system: {error}")
-                return get_ai_suggestion_old(user_message)
-                
+            # Return the decision
+            return {
+                "search_term": decision.get("selected_product"),
+                "category": decision.get("category"),
+                "reasoning": decision.get("reasoning"),
+                "color_preference": decision.get("color_preference"),
+                "confidence": decision.get("confidence", 0.8),
+                "requires_product_details": decision.get("requires_product_details", False),
+                "conversation_only": decision.get("selected_product") is None
+            }, decision.get("response_message", "I'll help you with that!")
+            
+        except json.JSONDecodeError:
+            # If JSON parsing fails, treat as conversational response
+            add_debug_log("🗣️ LLM provided conversational response")
+            return {
+                "search_term": None,
+                "conversation_only": True
+            }, llm_response
+            
     except Exception as e:
-        add_debug_log(f"Error in new AI suggestion system: {e}")
-        # Fallback to old system
-        return get_ai_suggestion_old(user_message)
+        add_debug_log(f"❌ LLM decision error: {e}")
+        # Fallback to simple conversational response
+        return {
+            "search_term": None,
+            "conversation_only": True
+        }, "I had trouble understanding your request. Could you try rephrasing it?"
 
 # =============================================================================
 # MODERN APPROACH: Intelligent Logo Adjustment
@@ -985,12 +974,20 @@ def extract_current_product_type(chat_history):
 # =============================================================================
 
 def add_message_to_chat(role, content):
-    """Add a message to chat history, avoiding duplicates"""
+    """Add a message to chat history with tracking and duplicate prevention"""
     global chat_history
     
     # Skip empty messages
     if not content.strip():
         return
+    
+    # Import and use chat tracker
+    try:
+        sys.path.append('..')
+        from chat_tracker import track_chat_message
+        track_chat_message(role, content)
+    except ImportError:
+        pass  # Tracker not available
         
     # Skip if the last message with the same role had identical content
     if chat_history and chat_history[-1]["role"] == role and chat_history[-1]["content"] == content:
